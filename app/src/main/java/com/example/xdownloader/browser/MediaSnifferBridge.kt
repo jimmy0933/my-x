@@ -90,7 +90,7 @@ class MediaSnifferBridge(
                             }
                         }
                     }
-                    if (vSrc) {
+                    if (vSrc && vSrc.indexOf('.m3u8') === -1 && vSrc.indexOf('.ts') === -1) {
                         mediaList.push({
                             type: 'VIDEO',
                             url: vSrc,
@@ -99,17 +99,19 @@ class MediaSnifferBridge(
                     }
                 }
 
-                // 3. Scan performance entries for twimg video API responses
+                // 3. Scan performance entries for twimg video API responses (filtering out .m3u8 and .ts)
                 if (window.performance && window.performance.getEntriesByType) {
                     var resources = window.performance.getEntriesByType('resource');
                     for (var r = 0; r < resources.length; r++) {
                         var resUrl = resources[r].name;
                         if (resUrl && resUrl.indexOf('video.twimg.com') !== -1) {
-                            mediaList.push({
-                                type: 'VIDEO',
-                                url: resUrl,
-                                poster: ''
-                            });
+                            if (resUrl.indexOf('.m3u8') === -1 && resUrl.indexOf('.ts') === -1) {
+                                mediaList.push({
+                                    type: 'VIDEO',
+                                    url: resUrl,
+                                    poster: ''
+                                });
+                            }
                         }
                     }
                 }

@@ -11,6 +11,7 @@ import android.widget.Toast
 import com.example.xdownloader.R
 import com.example.xdownloader.data.MediaItem
 import com.example.xdownloader.data.MediaType
+import com.example.xdownloader.utils.MediaSnifferUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -23,19 +24,12 @@ class AndroidMediaDownloader(private val context: Context) {
     /**
      * Downloads media item using system DownloadManager
      */
-    fun downloadWithDownloadManager(item: MediaItem, customFilename: String? = null) {
+    fun downloadWithDownloadManager(item: MediaItem) {
         try {
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val uri = Uri.parse(item.url)
 
-            val fileExtension = if (item.type == MediaType.IMAGE) {
-                if (item.url.contains("format=png")) ".png" else ".jpg"
-            } else {
-                ".mp4"
-            }
-
-            val fileName = customFilename ?: "XDownloader_${System.currentTimeMillis()}$fileExtension"
-            val subDirectory = if (item.type == MediaType.IMAGE) "Pictures/XDownloader" else "Movies/XDownloader"
+            val fileName = MediaSnifferUtils.generateUniqueFileName(item)
 
             val request = DownloadManager.Request(uri).apply {
                 setTitle(if (item.type == MediaType.IMAGE) "下載圖片" else "下載影片")
@@ -68,8 +62,7 @@ class AndroidMediaDownloader(private val context: Context) {
             } else {
                 "video/mp4"
             }
-            val ext = if (mimeType == "image/png") ".png" else if (isImage) ".jpg" else ".mp4"
-            val fileName = "X_${System.currentTimeMillis()}$ext"
+            val fileName = MediaSnifferUtils.generateUniqueFileName(item)
 
             val url = URL(item.url)
             val connection = url.openConnection() as HttpURLConnection

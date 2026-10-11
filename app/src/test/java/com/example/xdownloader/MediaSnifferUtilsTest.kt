@@ -1,5 +1,7 @@
 package com.example.xdownloader
 
+import com.example.xdownloader.data.MediaItem
+import com.example.xdownloader.data.MediaType
 import com.example.xdownloader.utils.MediaSnifferUtils
 import org.junit.Assert.*
 import org.junit.Test
@@ -34,11 +36,15 @@ class MediaSnifferUtilsTest {
     }
 
     @Test
-    fun isVideoUrl_identifiesTwimgVideos() {
-        val videoUrl = "https://video.twimg.com/ext_tw_video/1234/pu/vid/1280x720/sample.mp4"
+    fun isVideoUrl_identifiesMp4AndExcludesHlsAndTsSegments() {
+        val mp4Url = "https://video.twimg.com/ext_tw_video/1234/pu/vid/1280x720/sample.mp4"
+        val m3u8Url = "https://video.twimg.com/ext_tw_video/1234/pu/pl/playlist.m3u8"
+        val tsUrl = "https://video.twimg.com/ext_tw_video/1234/pu/vid/segment_0.ts"
         val imageUrl = "https://pbs.twimg.com/media/ABCDEF.jpg"
 
-        assertTrue(MediaSnifferUtils.isVideoUrl(videoUrl))
+        assertTrue(MediaSnifferUtils.isVideoUrl(mp4Url))
+        assertFalse(MediaSnifferUtils.isVideoUrl(m3u8Url))
+        assertFalse(MediaSnifferUtils.isVideoUrl(tsUrl))
         assertFalse(MediaSnifferUtils.isVideoUrl(imageUrl))
     }
 
@@ -47,9 +53,24 @@ class MediaSnifferUtilsTest {
         val urls = listOf(
             "https://video.twimg.com/ext_tw_video/123/vid/320x180/small.mp4",
             "https://video.twimg.com/ext_tw_video/123/vid/1280x720/hd.mp4",
+            "https://video.twimg.com/ext_tw_video/123/pu/pl/playlist.m3u8",
             "https://video.twimg.com/ext_tw_video/123/vid/640x360/sd.mp4"
         )
         val best = MediaSnifferUtils.extractBestVideoUrl(urls)
         assertEquals("https://video.twimg.com/ext_tw_video/123/vid/1280x720/hd.mp4", best)
+    }
+
+    @Test
+    fun generateUniqueFileName_producesUniqueNamesForSameItem() {
+        val item = MediaItem(
+            id = "test_item",
+            url = "https://video.twimg.com/ext_tw_video/123/sample.mp4",
+            thumbnailUrl = "",
+            type = MediaType.VIDEO
+        )
+
+        val names = (1..50).map { MediaSnifferUtils.generateUniqueFileName(item) }.toSet()
+        assertEquals(50, names.size)
+        assertTrue(names.all { it.startsWith("X_") && it.endsWith(".mp4") })
     }
 }

@@ -2,7 +2,7 @@ package com.example.xdownloader.utils
 
 import com.example.xdownloader.data.MediaItem
 import com.example.xdownloader.data.MediaType
-import java.net.URLDecoder
+import java.util.UUID
 
 object MediaSnifferUtils {
 
@@ -33,18 +33,21 @@ object MediaSnifferUtils {
     }
 
     /**
-     * Checks if a URL is a valid X video or media stream URL
+     * Checks if a URL is a downloadable direct MP4 video URL.
+     * Excludes HLS chunk segments (.ts) and HLS playlist manifests (.m3u8).
      */
     fun isVideoUrl(url: String): Boolean {
-        return (url.contains("video.twimg.com") || url.contains(".mp4") || url.contains(".m3u8")) &&
-               !url.contains(".png") && !url.contains(".jpg") && !url.contains(".jpeg")
+        if (!url.contains("video.twimg.com") && !url.contains(".mp4")) return false
+        if (url.endsWith(".ts") || url.contains(".ts?") || url.endsWith(".m3u8") || url.contains(".m3u8?")) return false
+        if (url.contains(".png") || url.contains(".jpg") || url.contains(".jpeg")) return false
+        return true
     }
 
     /**
      * Extracts high quality video stream MP4 URL from HLS or playlist variants if available
      */
     fun extractBestVideoUrl(urls: List<String>): String? {
-        val mp4s = urls.filter { it.contains(".mp4") }
+        val mp4s = urls.filter { isVideoUrl(it) }
         if (mp4s.isNotEmpty()) {
             // Sort by resolution hint in URL if present (e.g. /1280x720/)
             return mp4s.maxByOrNull { url ->
@@ -55,7 +58,20 @@ object MediaSnifferUtils {
                 } else 0
             }
         }
-        return urls.firstOrNull { isVideoUrl(it) }
+        return null
+    }
+
+    /**
+     * Generates a unique filename using timestamp, media ID, and UUID
+     */
+    fun generateUniqueFileName(item: MediaItem): String {
+        val extension = if (item.type == MediaType.IMAGE) {
+            if (item.url.contains("format=png")) ".png" else ".jpg"
+        } else {
+            ".mp4"
+        }
+        val uuidSegment = UUID.randomUUID().toString().substring(0, 8)
+        return "X_${System.currentTimeMillis()}_${uuidSegment}$extension"
     }
 
     private fun String.toIntOrDefault(default: Int): Int = toIntOrNull() ?: default
