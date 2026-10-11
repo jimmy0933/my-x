@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XDownloader</string>
+    <string name="title_browser">X 瀏覽器</string>
+    <string name="title_downloads">下載列表</string>
+    <string name="detect_media">偵測媒體</string>
+    <string name="detected_media_title">頁面媒體檔 (%1$d)</string>
+    <string name="download_all">全部下載</string>
+    <string name="download_item">下載</string>
+    <string name="download_started">已開始下載</string>
+    <string name="download_completed">下載完成</string>
+    <string name="no_media_found">未在此頁面偵測到圖片或影片</string>
+    <string name="filter_images">圖片</string>
+    <string name="filter_videos">影片</string>
+    <string name="type_image">圖片</string>
+    <string name="type_video">影片</string>
+    <string name="permission_denied">需要存取權限以儲存媒體</string>
+</resources>
