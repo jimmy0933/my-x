@@ -39,6 +39,7 @@ object MediaSnifferUtils {
     fun isVideoUrl(url: String): Boolean {
         if (!url.contains("video.twimg.com") && !url.contains(".mp4")) return false
         if (url.endsWith(".ts") || url.contains(".ts?") || url.endsWith(".m3u8") || url.contains(".m3u8?")) return false
+        if (url.contains(".m4s", ignoreCase = true) || url.contains("init.mp4", ignoreCase = true)) return false
         if (url.contains(".png") || url.contains(".jpg") || url.contains(".jpeg")) return false
         return true
     }
