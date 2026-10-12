@@ -12,7 +12,9 @@ import com.example.xdownloader.R
 import com.example.xdownloader.data.MediaItem
 import com.example.xdownloader.data.MediaType
 import com.example.xdownloader.utils.MediaSnifferUtils
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -25,6 +27,23 @@ class AndroidMediaDownloader(private val context: Context) {
      * Downloads media item using system DownloadManager
      */
     fun downloadWithDownloadManager(item: MediaItem) {
+        if (item.url.contains(".m3u8")) {
+            CoroutineScope(Dispatchers.IO).launch {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, context.getString(R.string.download_started), Toast.LENGTH_SHORT).show()
+                }
+                val success = downloadToMediaStore(item)
+                withContext(Dispatchers.Main) {
+                    if (success) {
+                        Toast.makeText(context, "下載完成", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "下載失敗", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            return
+        }
+
         try {
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val uri = Uri.parse(item.url)
@@ -63,6 +82,54 @@ class AndroidMediaDownloader(private val context: Context) {
                 "video/mp4"
             }
             val fileName = MediaSnifferUtils.generateUniqueFileName(item)
+
+            if (item.url.contains(".m3u8")) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    val contentValues = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                        put(
+                            MediaStore.MediaColumns.RELATIVE_PATH,
+                            "${Environment.DIRECTORY_MOVIES}/XDownloader"
+                        )
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+
+                    val contentResolver = context.contentResolver
+                    val uri = contentResolver.insert(collection, contentValues) ?: return@withContext false
+
+                    val success = contentResolver.openOutputStream(uri)?.use { outputStream ->
+                        HlsDownloader.downloadHlsStream(item.url, outputStream)
+                    } ?: false
+
+                    if (success) {
+                        contentValues.clear()
+                        contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        contentResolver.update(uri, contentValues, null, null)
+                        return@withContext true
+                    } else {
+                        contentResolver.delete(uri, null, null)
+                        return@withContext false
+                    }
+                } else {
+                    val targetDir = File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                        "XDownloader"
+                    )
+                    if (!targetDir.exists()) {
+                        targetDir.mkdirs()
+                    }
+                    val destFile = File(targetDir, fileName)
+                    val success = destFile.outputStream().use { outputStream ->
+                        HlsDownloader.downloadHlsStream(item.url, outputStream)
+                    }
+                    if (!success && destFile.exists()) {
+                        destFile.delete()
+                    }
+                    return@withContext success
+                }
+            }
 
             val url = URL(item.url)
             val connection = url.openConnection() as HttpURLConnection
