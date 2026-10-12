@@ -1,51 +1,95 @@
 package com.example.xdownloader.downloader
 
+import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
 object HlsDownloader {
 
-    data class Segment(
-        val url: String,
-        val byteRangeOffset: Long? = null,
-        val byteRangeLength: Long? = null
+    enum class StreamFormat(val extension: String, val mimeType: String) {
+        MP4(".mp4", "video/mp4"),
+        TS(".ts", "video/mp2t")
+    }
+
+    data class AudioTrack(
+        val groupId: String,
+        val name: String,
+        val url: String
     )
 
     data class HlsVariant(
         val url: String,
         val bandwidth: Long,
         val resolution: String,
-        val audioUrl: String? = null
+        val audioGroupId: String? = null
+    )
+
+    data class Segment(
+        val url: String,
+        val byteRangeLength: Long? = null,
+        val byteRangeOffset: Long? = null
     )
 
     data class MediaPlaylist(
-        val initSegment: Segment?,
-        val segments: List<Segment>
-    ) {
-        val initSegmentUrl: String? get() = initSegment?.url
-        val segmentUrls: List<String> get() = segments.map { it.url }
-    }
+        val initSegmentUrl: String?,
+        val initByteRangeLength: Long? = null,
+        val initByteRangeOffset: Long? = null,
+        val segments: List<Segment>,
+        val format: StreamFormat
+    )
 
-    fun resolveMediaPlaylistUrl(masterUrl: String): String {
-        return resolveBestVariant(masterUrl).url
-    }
+    data class ResolvedStream(
+        val videoPlaylistUrl: String,
+        val audioPlaylistUrl: String?,
+        val format: StreamFormat
+    )
 
-    fun resolveBestVariant(masterUrl: String): HlsVariant {
+    fun resolveStream(masterUrl: String): ResolvedStream {
         try {
-            val content = fetchUrlText(masterUrl) ?: return HlsVariant(masterUrl, 0, "")
+            val content = fetchUrlText(masterUrl) ?: return ResolvedStream(masterUrl, null, StreamFormat.MP4)
             if (!content.contains("#EXT-X-STREAM-INF")) {
-                // Already a media playlist
-                return HlsVariant(masterUrl, 0, "")
+                // Direct media playlist
+                val mediaPlaylist = parseMediaPlaylist(content, masterUrl)
+                return ResolvedStream(masterUrl, null, mediaPlaylist.format)
             }
 
+            val audioTracks = parseAudioTracks(content, masterUrl)
             val variants = parseMasterPlaylist(content, masterUrl)
             val bestVariant = variants.maxByOrNull { it.bandwidth }
-            return bestVariant ?: HlsVariant(masterUrl, 0, "")
+
+            val videoUrl = bestVariant?.url ?: masterUrl
+            val audioUrl = bestVariant?.audioGroupId?.let { audioTracks[it]?.url }
+
+            val videoContent = fetchUrlText(videoUrl)
+            val format = if (videoContent != null) {
+                parseMediaPlaylist(videoContent, videoUrl).format
+            } else {
+                StreamFormat.MP4
+            }
+
+            return ResolvedStream(videoUrl, audioUrl, format)
         } catch (e: Exception) {
             e.printStackTrace()
-            return HlsVariant(masterUrl, 0, "")
+            return ResolvedStream(masterUrl, null, StreamFormat.MP4)
         }
+    }
+
+    fun parseAudioTracks(content: String, baseUrl: String): Map<String, AudioTrack> {
+        val audioTracks = mutableMapOf<String, AudioTrack>()
+        for (line in content.lines()) {
+            val trimmed = line.trim()
+            if (trimmed.startsWith("#EXT-X-MEDIA:") && trimmed.contains("TYPE=AUDIO")) {
+                val groupId = parseAttribute(trimmed, "GROUP-ID")
+                val name = parseAttribute(trimmed, "NAME") ?: "Audio"
+                val uri = parseAttribute(trimmed, "URI")
+                if (!groupId.isNullOrEmpty() && !uri.isNullOrEmpty()) {
+                    val resolvedUrl = resolveRelativeUrl(baseUrl, uri)
+                    audioTracks[groupId] = AudioTrack(groupId, name, resolvedUrl)
+                }
+            }
+        }
+        return audioTracks
     }
 
     fun parseMasterPlaylist(content: String, baseUrl: String): List<HlsVariant> {
@@ -71,38 +115,42 @@ object HlsDownloader {
         val variants = mutableListOf<HlsVariant>()
         var currentBandwidth = 0L
         var currentResolution = ""
-        var currentAudioGroup: String? = null
+        var currentAudioGroupId: String? = null
 
         for (i in lines.indices) {
             val line = lines[i].trim()
             if (line.startsWith("#EXT-X-STREAM-INF:")) {
                 currentBandwidth = parseAttribute(line, "BANDWIDTH")?.toLongOrNull() ?: 0L
                 currentResolution = parseAttribute(line, "RESOLUTION") ?: ""
-                currentAudioGroup = parseAttribute(line, "AUDIO")
+                currentAudioGroupId = parseAttribute(line, "AUDIO")
             } else if (line.isNotEmpty() && !line.startsWith("#")) {
                 val variantUrl = resolveRelativeUrl(baseUrl, line)
-                val audioUrl = currentAudioGroup?.let { audioGroupMap[it] }
-                variants.add(HlsVariant(variantUrl, currentBandwidth, currentResolution, audioUrl))
+                variants.add(HlsVariant(variantUrl, currentBandwidth, currentResolution, currentAudioGroupId))
                 currentBandwidth = 0L
                 currentResolution = ""
-                currentAudioGroup = null
+                currentAudioGroupId = null
             }
         }
         return variants
     }
 
     fun parseMediaPlaylist(content: String, baseUrl: String): MediaPlaylist {
-        var initSegment: Segment? = null
-        val segments = mutableListOf<Segment>()
+        var initSegmentUrl: String? = null
+        var initByteRangeLength: Long? = null
+        var initByteRangeOffset: Long? = null
 
+        val segments = mutableListOf<Segment>()
         var pendingByteRangeLength: Long? = null
         var pendingByteRangeOffset: Long? = null
-        var currentByteOffset: Long = 0L
-        var lastResourceUrl: String? = null
+        var lastByteRangeOffset: Long = 0L
+
+        var isTs = false
+        var isMp4 = false
 
         for (line in content.lines()) {
             val trimmed = line.trim()
             if (trimmed.startsWith("#EXT-X-MAP:")) {
+                isMp4 = true
                 val uri = parseAttribute(trimmed, "URI")
                 if (!uri.isNullOrEmpty()) {
                     val fullUrl = resolveRelativeUrl(baseUrl, uri)
@@ -116,31 +164,48 @@ object HlsDownloader {
                         initSegment = Segment(fullUrl)
                     }
                 }
+                val byteRangeAttr = parseAttribute(trimmed, "BYTERANGE")
+                if (!byteRangeAttr.isNullOrEmpty()) {
+                    val (len, offset) = parseByteRangeValue(byteRangeAttr, 0L)
+                    initByteRangeLength = len
+                    initByteRangeOffset = offset
+                }
             } else if (trimmed.startsWith("#EXT-X-BYTERANGE:")) {
-                val value = trimmed.removePrefix("#EXT-X-BYTERANGE:").trim()
-                val parts = value.split("@")
-                val length = parts.getOrNull(0)?.toLongOrNull()
-                val offset = parts.getOrNull(1)?.toLongOrNull()
-                pendingByteRangeLength = length
+                val value = trimmed.substringAfter("#EXT-X-BYTERANGE:").trim()
+                val (len, offset) = parseByteRangeValue(value, lastByteRangeOffset)
+                pendingByteRangeLength = len
                 pendingByteRangeOffset = offset
+                lastByteRangeOffset = offset + len
             } else if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                 val segmentUrl = resolveRelativeUrl(baseUrl, trimmed)
-                if (pendingByteRangeLength != null) {
-                    val offset = pendingByteRangeOffset ?: if (segmentUrl == lastResourceUrl) currentByteOffset else 0L
-                    val length = pendingByteRangeLength
-                    segments.add(Segment(segmentUrl, byteRangeOffset = offset, byteRangeLength = length))
-                    currentByteOffset = offset + (length ?: 0L)
-                    lastResourceUrl = segmentUrl
-                    pendingByteRangeLength = null
-                    pendingByteRangeOffset = null
-                } else {
-                    segments.add(Segment(segmentUrl))
-                    currentByteOffset = 0L
-                    lastResourceUrl = segmentUrl
+                if (segmentUrl.contains(".ts", ignoreCase = true)) {
+                    isTs = true
+                } else if (segmentUrl.contains(".m4s", ignoreCase = true) || segmentUrl.contains(".mp4", ignoreCase = true)) {
+                    isMp4 = true
                 }
+
+                segments.add(
+                    Segment(
+                        url = segmentUrl,
+                        byteRangeLength = pendingByteRangeLength,
+                        byteRangeOffset = pendingByteRangeOffset
+                    )
+                )
+
+                pendingByteRangeLength = null
+                pendingByteRangeOffset = null
             }
         }
-        return MediaPlaylist(initSegment, segments)
+
+        val format = if (isTs && !isMp4) StreamFormat.TS else StreamFormat.MP4
+
+        return MediaPlaylist(
+            initSegmentUrl = initSegmentUrl,
+            initByteRangeLength = initByteRangeLength,
+            initByteRangeOffset = initByteRangeOffset,
+            segments = segments,
+            format = format
+        )
     }
 
     fun downloadHlsStream(
@@ -148,49 +213,15 @@ object HlsDownloader {
         outputStream: OutputStream,
         onProgress: ((downloadedSegments: Int, totalSegments: Int) -> Unit)? = null
     ): Boolean {
-        try {
-            val bestVariant = resolveBestVariant(playlistUrl)
+        val resolved = resolveStream(playlistUrl)
+        val videoPlaylistContent = fetchUrlText(resolved.videoPlaylistUrl) ?: return false
+        val videoPlaylist = parseMediaPlaylist(videoPlaylistContent, resolved.videoPlaylistUrl)
 
-            val videoPlaylistContent = fetchUrlText(bestVariant.url) ?: return false
-            val videoPlaylist = parseMediaPlaylist(videoPlaylistContent, bestVariant.url)
-
-            val audioPlaylist = if (!bestVariant.audioUrl.isNullOrEmpty()) {
-                val audioContent = fetchUrlText(bestVariant.audioUrl)
-                if (audioContent != null) parseMediaPlaylist(audioContent, bestVariant.audioUrl) else null
-            } else null
-
-            val totalSegments = videoPlaylist.segments.size + (audioPlaylist?.segments?.size ?: 0) + (if (videoPlaylist.initSegment != null) 1 else 0) + (if (audioPlaylist?.initSegment != null) 1 else 0)
-            if (totalSegments == 0) return false
-
-            var downloadedSegments = 0
-
-            // Check if segments are fMP4 or TS
-            val firstSegment = videoPlaylist.initSegment ?: videoPlaylist.segments.firstOrNull() ?: return false
-            val firstSegmentBytes = fetchSegmentBytes(firstSegment) ?: return false
-
-            val isFmp4 = isFmp4Bytes(firstSegmentBytes)
-
-            if (isFmp4 && audioPlaylist == null) {
-                // For pure fMP4 without separate audio, write init segment and media segments directly
-                outputStream.write(firstSegmentBytes)
-                downloadedSegments++
-                onProgress?.invoke(downloadedSegments, totalSegments)
-
-                val remainingSegments = if (videoPlaylist.initSegment != null) {
-                    videoPlaylist.segments
-                } else {
-                    videoPlaylist.segments.drop(1)
-                }
-
-                for (segment in remainingSegments) {
-                    val bytes = fetchSegmentBytes(segment) ?: return false
-                    outputStream.write(bytes)
-                    downloadedSegments++
-                    onProgress?.invoke(downloadedSegments, totalSegments)
-                }
-                outputStream.flush()
-                return true
+        val audioPlaylist = resolved.audioPlaylistUrl?.let { audioUrl ->
+            fetchUrlText(audioUrl)?.let { content ->
+                parseMediaPlaylist(content, audioUrl)
             }
+        }
 
             val videoTrack: DemuxedTrack
             val audioTrack: DemuxedTrack
@@ -290,27 +321,31 @@ object HlsDownloader {
             e.printStackTrace()
             return false
         }
+
+        return downloadedCount > 0
     }
 
-    private fun isFmp4Bytes(bytes: ByteArray): Boolean {
-        if (bytes.size < 8) return false
-        val boxType = String(bytes, 4, 4, Charsets.ISO_8859_1)
-        return boxType in setOf("ftyp", "styp", "moof", "mdat", "moov", "sidx")
-    }
-
-    fun fetchSegmentBytes(segment: Segment): ByteArray? {
+    fun downloadSegment(
+        urlString: String,
+        length: Long?,
+        offset: Long?,
+        outputStream: OutputStream
+    ): Boolean {
         var connection: HttpURLConnection? = null
         return try {
             val url = URL(segment.url)
             connection = url.openConnection() as HttpURLConnection
             connection.connectTimeout = 15000
             connection.readTimeout = 15000
-            if (segment.byteRangeLength != null) {
-                val start = segment.byteRangeOffset ?: 0L
-                val end = start + segment.byteRangeLength - 1
+
+            if (length != null && offset != null) {
+                val start = offset
+                val end = offset + length - 1
                 connection.setRequestProperty("Range", "bytes=$start-$end")
             }
+
             connection.connect()
+
             val responseCode = connection.responseCode
             if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_PARTIAL) {
                 val inputStream = connection.inputStream
@@ -361,13 +396,38 @@ object HlsDownloader {
                         bytes
                     }
                 }
-            } else null
+                true
+            } else {
+                false
+            }
         } catch (e: Exception) {
             e.printStackTrace()
-            null
+            false
         } finally {
             connection?.disconnect()
         }
+    }
+
+    private fun copyBytesWithLimit(input: InputStream, output: OutputStream, limit: Long) {
+        val buffer = ByteArray(8192)
+        var remaining = limit
+        while (remaining > 0) {
+            val readLen = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            if (readLen <= 0) break
+            output.write(buffer, 0, readLen)
+            remaining -= readLen
+        }
+    }
+
+    private fun parseByteRangeValue(value: String, previousOffset: Long): Pair<Long, Long> {
+        val parts = value.split("@")
+        val length = parts[0].trim().toLongOrNull() ?: 0L
+        val offset = if (parts.size > 1) {
+            parts[1].trim().toLongOrNull() ?: previousOffset
+        } else {
+            previousOffset
+        }
+        return Pair(length, offset)
     }
 
     fun fetchUrlText(urlString: String): String? {

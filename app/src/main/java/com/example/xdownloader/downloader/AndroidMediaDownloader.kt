@@ -20,6 +20,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 class AndroidMediaDownloader(private val context: Context) {
 
@@ -84,11 +85,16 @@ class AndroidMediaDownloader(private val context: Context) {
             val fileName = MediaSnifferUtils.generateUniqueFileName(item)
 
             if (item.url.contains(".m3u8")) {
+                val resolvedStream = HlsDownloader.resolveStream(item.url)
+                val format = resolvedStream.format
+                val hlsFileName = "X_${System.currentTimeMillis()}_${UUID.randomUUID().toString().substring(0, 8)}${format.extension}"
+                val hlsMimeType = format.mimeType
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
                     val contentValues = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, hlsFileName)
+                        put(MediaStore.MediaColumns.MIME_TYPE, hlsMimeType)
                         put(
                             MediaStore.MediaColumns.RELATIVE_PATH,
                             "${Environment.DIRECTORY_MOVIES}/XDownloader"
@@ -120,7 +126,7 @@ class AndroidMediaDownloader(private val context: Context) {
                     if (!targetDir.exists()) {
                         targetDir.mkdirs()
                     }
-                    val destFile = File(targetDir, fileName)
+                    val destFile = File(targetDir, hlsFileName)
                     val success = destFile.outputStream().use { outputStream ->
                         HlsDownloader.downloadHlsStream(item.url, outputStream)
                     }
