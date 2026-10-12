@@ -36,7 +36,7 @@ class MediaSnifferUtilsTest {
     }
 
     @Test
-    fun isVideoUrl_identifiesMp4AndExcludesHlsAndTsSegments() {
+    fun isVideoUrl_identifiesMp4AndHlsPlaylistAndExcludesSegments() {
         val mp4Url = "https://video.twimg.com/ext_tw_video/1234/pu/vid/1280x720/sample.mp4"
         val m3u8Url = "https://video.twimg.com/ext_tw_video/1234/pu/pl/playlist.m3u8"
         val tsUrl = "https://video.twimg.com/ext_tw_video/1234/pu/vid/segment_0.ts"
@@ -45,7 +45,7 @@ class MediaSnifferUtilsTest {
         val imageUrl = "https://pbs.twimg.com/media/ABCDEF.jpg"
 
         assertTrue(MediaSnifferUtils.isVideoUrl(mp4Url))
-        assertFalse(MediaSnifferUtils.isVideoUrl(m3u8Url))
+        assertTrue(MediaSnifferUtils.isVideoUrl(m3u8Url))
         assertFalse(MediaSnifferUtils.isVideoUrl(tsUrl))
         assertFalse(MediaSnifferUtils.isVideoUrl(m4sUrl))
         assertFalse(MediaSnifferUtils.isVideoUrl(initMp4Url))
@@ -53,8 +53,8 @@ class MediaSnifferUtilsTest {
     }
 
     @Test
-    fun extractBestVideoUrl_selectsHighestResolutionMp4AndIgnoresSegments() {
-        val urls = listOf(
+    fun extractBestVideoUrl_prefersMp4OverHlsAndFallsBackToHls() {
+        val mp4AndHlsUrls = listOf(
             "https://video.twimg.com/ext_tw_video/123/vid/320x180/small.mp4",
             "https://video.twimg.com/ext_tw_video/123/vid/1280x720/hd.mp4",
             "https://video.twimg.com/ext_tw_video/123/vid/1920x1080/init.mp4",
@@ -62,8 +62,16 @@ class MediaSnifferUtilsTest {
             "https://video.twimg.com/ext_tw_video/123/pu/pl/playlist.m3u8",
             "https://video.twimg.com/ext_tw_video/123/vid/640x360/sd.mp4"
         )
-        val best = MediaSnifferUtils.extractBestVideoUrl(urls)
-        assertEquals("https://video.twimg.com/ext_tw_video/123/vid/1280x720/hd.mp4", best)
+        val bestMp4 = MediaSnifferUtils.extractBestVideoUrl(mp4AndHlsUrls)
+        assertEquals("https://video.twimg.com/ext_tw_video/123/vid/1280x720/hd.mp4", bestMp4)
+
+        val hlsOnlyUrls = listOf(
+            "https://video.twimg.com/ext_tw_video/123/vid/1920x1080/init.mp4",
+            "https://video.twimg.com/ext_tw_video/123/vid/1920x1080/segment_1.m4s",
+            "https://video.twimg.com/ext_tw_video/123/pu/pl/playlist.m3u8"
+        )
+        val fallbackHls = MediaSnifferUtils.extractBestVideoUrl(hlsOnlyUrls)
+        assertEquals("https://video.twimg.com/ext_tw_video/123/pu/pl/playlist.m3u8", fallbackHls)
     }
 
     @Test

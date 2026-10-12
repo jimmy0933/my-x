@@ -33,22 +33,26 @@ object MediaSnifferUtils {
     }
 
     /**
-     * Checks if a URL is a downloadable direct MP4 video URL.
-     * Excludes HLS chunk segments (.ts) and HLS playlist manifests (.m3u8).
+     * Checks if a URL is a downloadable direct MP4 or HLS playlist video URL.
+     * Excludes chunk segments (.ts, .m4s) and initialization fragments (init.mp4).
      */
     fun isVideoUrl(url: String): Boolean {
-        if (!url.contains("video.twimg.com") && !url.contains(".mp4")) return false
-        if (url.endsWith(".ts") || url.contains(".ts?") || url.endsWith(".m3u8") || url.contains(".m3u8?")) return false
+        if (!url.contains("video.twimg.com") && !url.contains(".mp4") && !url.contains(".m3u8")) return false
+        if (url.endsWith(".ts") || url.contains(".ts?")) return false
         if (url.contains(".m4s", ignoreCase = true) || url.contains("init.mp4", ignoreCase = true)) return false
         if (url.contains(".png") || url.contains(".jpg") || url.contains(".jpeg")) return false
         return true
     }
 
+    fun isHlsUrl(url: String): Boolean {
+        return url.contains(".m3u8", ignoreCase = true)
+    }
+
     /**
-     * Extracts high quality video stream MP4 URL from HLS or playlist variants if available
+     * Extracts high quality video stream URL. Prefers direct MP4 streams over HLS playlists if available.
      */
     fun extractBestVideoUrl(urls: List<String>): String? {
-        val mp4s = urls.filter { isVideoUrl(it) }
+        val mp4s = urls.filter { isVideoUrl(it) && !isHlsUrl(it) }
         if (mp4s.isNotEmpty()) {
             // Sort by resolution hint in URL if present (e.g. /1280x720/)
             return mp4s.maxByOrNull { url ->
@@ -59,6 +63,12 @@ object MediaSnifferUtils {
                 } else 0
             }
         }
+
+        val hlsPlaylists = urls.filter { isVideoUrl(it) && isHlsUrl(it) }
+        if (hlsPlaylists.isNotEmpty()) {
+            return hlsPlaylists.first()
+        }
+
         return null
     }
 
