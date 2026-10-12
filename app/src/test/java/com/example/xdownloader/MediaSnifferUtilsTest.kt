@@ -40,19 +40,25 @@ class MediaSnifferUtilsTest {
         val mp4Url = "https://video.twimg.com/ext_tw_video/1234/pu/vid/1280x720/sample.mp4"
         val m3u8Url = "https://video.twimg.com/ext_tw_video/1234/pu/pl/playlist.m3u8"
         val tsUrl = "https://video.twimg.com/ext_tw_video/1234/pu/vid/segment_0.ts"
+        val m4sUrl = "https://video.twimg.com/ext_tw_video/1234/pu/vid/segment_1.m4s?tag=10"
+        val initMp4Url = "https://video.twimg.com/ext_tw_video/1234/pu/vid/init.mp4?tag=10"
         val imageUrl = "https://pbs.twimg.com/media/ABCDEF.jpg"
 
         assertTrue(MediaSnifferUtils.isVideoUrl(mp4Url))
         assertFalse(MediaSnifferUtils.isVideoUrl(m3u8Url))
         assertFalse(MediaSnifferUtils.isVideoUrl(tsUrl))
+        assertFalse(MediaSnifferUtils.isVideoUrl(m4sUrl))
+        assertFalse(MediaSnifferUtils.isVideoUrl(initMp4Url))
         assertFalse(MediaSnifferUtils.isVideoUrl(imageUrl))
     }
 
     @Test
-    fun extractBestVideoUrl_selectsHighestResolutionMp4() {
+    fun extractBestVideoUrl_selectsHighestResolutionMp4AndIgnoresSegments() {
         val urls = listOf(
             "https://video.twimg.com/ext_tw_video/123/vid/320x180/small.mp4",
             "https://video.twimg.com/ext_tw_video/123/vid/1280x720/hd.mp4",
+            "https://video.twimg.com/ext_tw_video/123/vid/1920x1080/init.mp4",
+            "https://video.twimg.com/ext_tw_video/123/vid/1920x1080/segment_1.m4s",
             "https://video.twimg.com/ext_tw_video/123/pu/pl/playlist.m3u8",
             "https://video.twimg.com/ext_tw_video/123/vid/640x360/sd.mp4"
         )
