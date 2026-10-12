@@ -135,4 +135,46 @@ class HlsDownloaderTest {
         assertTrue(fullString.contains("mdat"))
         assertTrue(fullString.contains("moov"))
     }
+
+    @Test
+    fun fetchSegmentBytes_withTruncatedData_returnsNull() {
+        val segment = HlsDownloader.Segment("https://invalid.domain.xyz/segment.ts", byteRangeOffset = 0, byteRangeLength = 1000)
+        val result = HlsDownloader.fetchSegmentBytes(segment)
+        assertNull(result)
+    }
+
+    @Test
+    fun mp4Muxer_withBFrames_writesCttsBox() {
+        val videoTrack = HlsDownloader.DemuxedTrack(isVideo = true).apply {
+            sps = byteArrayOf(0x67.toByte(), 0x42.toByte(), 0x00.toByte(), 0x1E.toByte())
+            pps = byteArrayOf(0x68.toByte(), 0xCE.toByte(), 0x3C.toByte(), 0x80.toByte())
+            samples.add(HlsDownloader.DemuxedSample(byteArrayOf(0, 0, 0, 4, 1, 2, 3, 4), ptsMs = 80L, dtsMs = 0L, isKeyFrame = true))
+            samples.add(HlsDownloader.DemuxedSample(byteArrayOf(0, 0, 0, 4, 5, 6, 7, 8), ptsMs = 40L, dtsMs = 40L, isKeyFrame = false))
+        }
+
+        val baos = java.io.ByteArrayOutputStream()
+        HlsDownloader.Mp4Muxer.mux(videoTrack, null, baos)
+
+        val fullString = String(baos.toByteArray(), Charsets.ISO_8859_1)
+        assertTrue(fullString.contains("ctts"))
+    }
+
+    @Test
+    fun downloadHlsStream_withFmp4AndIndependentAudio_muxesSuccessfully() {
+        val demuxer = HlsDownloader.Fmp4Demuxer()
+        demuxer.videoTrack.sps = byteArrayOf(0x67.toByte(), 0x42.toByte(), 0x00.toByte(), 0x1E.toByte())
+        demuxer.videoTrack.samples.add(HlsDownloader.DemuxedSample(byteArrayOf(0, 0, 0, 4, 1, 2, 3, 4), 0L, 0L, true))
+        demuxer.audioTrack.audioSpecificConfig = byteArrayOf(0x12.toByte(), 0x10.toByte())
+        demuxer.audioTrack.samples.add(HlsDownloader.DemuxedSample(byteArrayOf(1, 2, 3, 4), 0L, 0L, true))
+
+        val baos = java.io.ByteArrayOutputStream()
+        HlsDownloader.Mp4Muxer.mux(demuxer.videoTrack, demuxer.audioTrack, baos)
+
+        val bytes = baos.toByteArray()
+        assertTrue(bytes.size > 32)
+        val fullString = String(bytes, Charsets.ISO_8859_1)
+        assertTrue(fullString.contains("ftyp"))
+        assertTrue(fullString.contains("mdat"))
+        assertTrue(fullString.contains("moov"))
+    }
 }
