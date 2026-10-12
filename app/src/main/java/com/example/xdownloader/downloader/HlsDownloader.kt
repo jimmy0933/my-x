@@ -223,54 +223,103 @@ object HlsDownloader {
             }
         }
 
-        val totalSegments = (if (videoPlaylist.initSegmentUrl != null) 1 else 0) +
-                videoPlaylist.segments.size +
-                (audioPlaylist?.let { (if (it.initSegmentUrl != null) 1 else 0) + it.segments.size } ?: 0)
+            val videoTrack: DemuxedTrack
+            val audioTrack: DemuxedTrack
 
-        var downloadedCount = 0
+            if (isFmp4) {
+                val fmp4Demuxer = Fmp4Demuxer()
+                videoPlaylist.initSegment?.let { initSeg ->
+                    val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
+                    if (initBytes != null) fmp4Demuxer.demuxInit(initBytes)
+                    downloadedSegments++
+                    onProgress?.invoke(downloadedSegments, totalSegments)
+                }
+                val videoSegs = if (videoPlaylist.initSegment == null && firstSegment == videoPlaylist.segments.firstOrNull()) {
+                    fmp4Demuxer.demuxSegment(firstSegmentBytes)
+                    downloadedSegments++
+                    onProgress?.invoke(downloadedSegments, totalSegments)
+                    videoPlaylist.segments.drop(1)
+                } else {
+                    videoPlaylist.segments
+                }
+                for (segment in videoSegs) {
+                    val bytes = fetchSegmentBytes(segment) ?: return false
+                    fmp4Demuxer.demuxSegment(bytes)
+                    downloadedSegments++
+                    onProgress?.invoke(downloadedSegments, totalSegments)
+                }
 
-        // 1. Download video init segment if present
-        if (videoPlaylist.initSegmentUrl != null) {
-            val success = downloadSegment(
-                videoPlaylist.initSegmentUrl,
-                videoPlaylist.initByteRangeLength,
-                videoPlaylist.initByteRangeOffset,
-                outputStream
-            )
-            if (!success) return false
-            downloadedCount++
-            onProgress?.invoke(downloadedCount, totalSegments)
-        }
+                if (audioPlaylist != null) {
+                    audioPlaylist.initSegment?.let { initSeg ->
+                        val bytes = fetchSegmentBytes(initSeg)
+                        if (bytes != null) fmp4Demuxer.demuxInit(bytes)
+                        downloadedSegments++
+                        onProgress?.invoke(downloadedSegments, totalSegments)
+                    }
+                    for (segment in audioPlaylist.segments) {
+                        val bytes = fetchSegmentBytes(segment) ?: return false
+                        fmp4Demuxer.demuxSegment(bytes)
+                        downloadedSegments++
+                        onProgress?.invoke(downloadedSegments, totalSegments)
+                    }
+                }
 
-        // 2. Download video segments
-        for (seg in videoPlaylist.segments) {
-            val success = downloadSegment(seg.url, seg.byteRangeLength, seg.byteRangeOffset, outputStream)
-            if (!success) return false
-            downloadedCount++
-            onProgress?.invoke(downloadedCount, totalSegments)
-        }
-    }
+                videoTrack = fmp4Demuxer.videoTrack
+                audioTrack = fmp4Demuxer.audioTrack
+            } else {
+                val tsDemuxer = TsDemuxer()
+                if (videoPlaylist.initSegment != null) {
+                    val initBytes = if (videoPlaylist.initSegment == firstSegment) firstSegmentBytes else fetchSegmentBytes(videoPlaylist.initSegment)
+                    if (initBytes != null) tsDemuxer.demux(initBytes)
+                    downloadedSegments++
+                    onProgress?.invoke(downloadedSegments, totalSegments)
+                }
 
-        // 3. Download audio track segments if separate audio track exists
-        audioPlaylist?.let { audio ->
-            if (audio.initSegmentUrl != null) {
-                val success = downloadSegment(
-                    audio.initSegmentUrl,
-                    audio.initByteRangeLength,
-                    audio.initByteRangeOffset,
-                    outputStream
-                )
-                if (!success) return false
-                downloadedCount++
-                onProgress?.invoke(downloadedCount, totalSegments)
+                val videoSegs = if (videoPlaylist.initSegment == null && firstSegment == videoPlaylist.segments.firstOrNull()) {
+                    tsDemuxer.demux(firstSegmentBytes)
+                    downloadedSegments++
+                    onProgress?.invoke(downloadedSegments, totalSegments)
+                    videoPlaylist.segments.drop(1)
+                } else {
+                    videoPlaylist.segments
+                }
+
+                for (segment in videoSegs) {
+                    val bytes = fetchSegmentBytes(segment) ?: return false
+                    tsDemuxer.demux(bytes)
+                    downloadedSegments++
+                    onProgress?.invoke(downloadedSegments, totalSegments)
+                }
+
+                if (audioPlaylist != null) {
+                    audioPlaylist.initSegment?.let { initSeg ->
+                        val bytes = fetchSegmentBytes(initSeg)
+                        if (bytes != null) tsDemuxer.demux(bytes)
+                        downloadedSegments++
+                        onProgress?.invoke(downloadedSegments, totalSegments)
+                    }
+                    for (segment in audioPlaylist.segments) {
+                        val bytes = fetchSegmentBytes(segment) ?: return false
+                        tsDemuxer.demux(bytes)
+                        downloadedSegments++
+                        onProgress?.invoke(downloadedSegments, totalSegments)
+                    }
+                }
+
+                tsDemuxer.flush()
+                videoTrack = tsDemuxer.videoTrack
+                audioTrack = tsDemuxer.audioTrack
             }
 
-            for (seg in audio.segments) {
-                val success = downloadSegment(seg.url, seg.byteRangeLength, seg.byteRangeOffset, outputStream)
-                if (!success) return false
-                downloadedCount++
-                onProgress?.invoke(downloadedCount, totalSegments)
+            if (videoTrack.samples.isEmpty() && audioTrack.samples.isEmpty()) {
+                return false
             }
+
+            Mp4Muxer.mux(videoTrack, audioTrack, outputStream)
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
         }
 
         return downloadedCount > 0
@@ -299,15 +348,52 @@ object HlsDownloader {
 
             val responseCode = connection.responseCode
             if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_PARTIAL) {
-                connection.inputStream.use { input ->
-                    if (length != null && offset != null && responseCode == HttpURLConnection.HTTP_OK) {
-                        // Server ignored Range header, manually skip to offset and read length
-                        input.skip(offset)
-                        copyBytesWithLimit(input, outputStream, length)
-                    } else if (length != null) {
-                        copyBytesWithLimit(input, outputStream, length)
+                val inputStream = connection.inputStream
+                if (responseCode == HttpURLConnection.HTTP_OK && segment.byteRangeLength != null) {
+                    val start = segment.byteRangeOffset ?: 0L
+                    var skipped = 0L
+                    while (skipped < start) {
+                        val s = inputStream.skip(start - skipped)
+                        if (s <= 0) break
+                        skipped += s
+                    }
+                    if (skipped < start) return null
+                    val length = segment.byteRangeLength.toInt()
+                    val buffer = ByteArray(length)
+                    var read = 0
+                    while (read < length) {
+                        val count = inputStream.read(buffer, read, length - read)
+                        if (count < 0) break
+                        read += count
+                    }
+                    if (read == length) buffer else null
+                } else if (responseCode == HttpURLConnection.HTTP_PARTIAL && segment.byteRangeLength != null) {
+                    val expectedStart = segment.byteRangeOffset ?: 0L
+                    val contentRange = connection.getHeaderField("Content-Range")
+                    if (!contentRange.isNullOrEmpty()) {
+                        val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""").find(contentRange)
+                        if (match != null) {
+                            val rangeStart = match.groupValues[1].toLongOrNull()
+                            if (rangeStart != null && rangeStart != expectedStart) {
+                                return null
+                            }
+                        }
+                    }
+                    val length = segment.byteRangeLength.toInt()
+                    val buffer = ByteArray(length)
+                    var read = 0
+                    while (read < length) {
+                        val count = inputStream.read(buffer, read, length - read)
+                        if (count < 0) break
+                        read += count
+                    }
+                    if (read == length) buffer else null
+                } else {
+                    val bytes = inputStream.readBytes()
+                    if (segment.byteRangeLength != null && bytes.size.toLong() != segment.byteRangeLength) {
+                        null
                     } else {
-                        input.copyTo(outputStream)
+                        bytes
                     }
                 }
                 true
@@ -500,6 +586,297 @@ object HlsDownloader {
         var audioSpecificConfig: ByteArray? = null
         var sampleRate: Int = 44100
         var channelCount: Int = 2
+    }
+
+    class Fmp4Demuxer {
+        val videoTrack = DemuxedTrack(isVideo = true)
+        val audioTrack = DemuxedTrack(isVideo = false)
+
+        private val trackTimescales = mutableMapOf<Int, Int>()
+        private val trackIsVideoMap = mutableMapOf<Int, Boolean>()
+
+        fun demuxInit(bytes: ByteArray) {
+            parseBoxes(bytes, 0, bytes.size) { type, _, bSize, pStart ->
+                if (type == "moov") {
+                    parseMoov(bytes, pStart, pStart + (bSize - 8).toInt())
+                }
+                false
+            }
+        }
+
+        private fun parseMoov(bytes: ByteArray, start: Int, end: Int) {
+            parseBoxes(bytes, start, end) { type, _, bSize, pStart ->
+                if (type == "trak") {
+                    parseTrak(bytes, pStart, pStart + (bSize - 8).toInt())
+                }
+                false
+            }
+        }
+
+        private fun parseTrak(bytes: ByteArray, start: Int, end: Int) {
+            var trackId = 1
+            var isVideo = true
+            var timescale = 1000
+
+            parseBoxes(bytes, start, end) { type, _, bSize, pStart ->
+                when (type) {
+                    "tkhd" -> {
+                        if (pStart + 20 <= end) {
+                            val version = bytes[pStart].toInt() and 0xFF
+                            val tIdOffset = if (version == 1) pStart + 16 else pStart + 12
+                            if (tIdOffset + 4 <= end) {
+                                trackId = readInt(bytes, tIdOffset)
+                            }
+                        }
+                    }
+                    "mdia" -> {
+                        parseBoxes(bytes, pStart, pStart + (bSize - 8).toInt()) { mType, _, mSize, mpStart ->
+                            when (mType) {
+                                "mdhd" -> {
+                                    val version = bytes[mpStart].toInt() and 0xFF
+                                    val tsOffset = if (version == 1) mpStart + 20 else mpStart + 12
+                                    if (tsOffset + 4 <= end) {
+                                        timescale = readInt(bytes, tsOffset)
+                                    }
+                                }
+                                "hdlr" -> {
+                                    if (mpStart + 12 <= end) {
+                                        val hType = String(bytes, mpStart + 8, 4, Charsets.ISO_8859_1)
+                                        isVideo = (hType == "vide")
+                                    }
+                                }
+                                "minf" -> {
+                                    parseBoxes(bytes, mpStart, mpStart + (mSize - 8).toInt()) { minfType, _, minfSize, minfStart ->
+                                        if (minfType == "stbl") {
+                                            parseStbl(bytes, minfStart, minfStart + (minfSize - 8).toInt(), isVideo)
+                                        }
+                                        false
+                                    }
+                                }
+                            }
+                            false
+                        }
+                    }
+                }
+                false
+            }
+            trackTimescales[trackId] = if (timescale > 0) timescale else 1000
+            trackIsVideoMap[trackId] = isVideo
+        }
+
+        private fun parseStbl(bytes: ByteArray, start: Int, end: Int, isVideo: Boolean) {
+            parseBoxes(bytes, start, end) { type, _, bSize, pStart ->
+                if (type == "stsd") {
+                    parseBoxes(bytes, pStart + 8, pStart + (bSize - 8).toInt()) { sType, _, sSize, spStart ->
+                        if (sType == "avc1" && isVideo) {
+                            parseAvc1(bytes, spStart, spStart + (sSize - 8).toInt())
+                        } else if (sType == "mp4a" && !isVideo) {
+                            parseMp4a(bytes, spStart, spStart + (sSize - 8).toInt())
+                        }
+                        false
+                    }
+                }
+                false
+            }
+        }
+
+        private fun parseAvc1(bytes: ByteArray, start: Int, end: Int) {
+            parseBoxes(bytes, start + 78, end) { type, _, bSize, pStart ->
+                if (type == "avcC" && pStart + 7 <= end) {
+                    val spsLen = ((bytes[pStart + 6].toInt() and 0xFF) shl 8) or (bytes[pStart + 7].toInt() and 0xFF)
+                    if (pStart + 8 + spsLen <= end) {
+                        videoTrack.sps = bytes.copyOfRange(pStart + 8, pStart + 8 + spsLen)
+                        val ppsOffset = pStart + 8 + spsLen + 1
+                        if (ppsOffset + 2 <= end) {
+                            val ppsLen = ((bytes[ppsOffset].toInt() and 0xFF) shl 8) or (bytes[ppsOffset + 1].toInt() and 0xFF)
+                            if (ppsOffset + 2 + ppsLen <= end) {
+                                videoTrack.pps = bytes.copyOfRange(ppsOffset + 2, ppsOffset + 2 + ppsLen)
+                            }
+                        }
+                    }
+                }
+                false
+            }
+        }
+
+        private fun parseMp4a(bytes: ByteArray, start: Int, end: Int) {
+            if (start + 24 <= end) {
+                audioTrack.channelCount = ((bytes[start + 16].toInt() and 0xFF) shl 8) or (bytes[start + 17].toInt() and 0xFF)
+                audioTrack.sampleRate = ((bytes[start + 22].toInt() and 0xFF) shl 8) or (bytes[start + 23].toInt() and 0xFF)
+            }
+            parseBoxes(bytes, start + 28, end) { type, _, bSize, pStart ->
+                if (type == "esds" && pStart + 4 <= end) {
+                    var ptr = pStart + 4
+                    while (ptr + 2 <= pStart + (bSize - 8).toInt() && ptr + 2 <= end) {
+                        val tag = bytes[ptr].toInt() and 0xFF
+                        val len = bytes[ptr + 1].toInt() and 0xFF
+                        if (tag == 0x05 && ptr + 2 + len <= end) {
+                            audioTrack.audioSpecificConfig = bytes.copyOfRange(ptr + 2, ptr + 2 + len)
+                            break
+                        }
+                        ptr += 2 + len
+                    }
+                }
+                false
+            }
+        }
+
+        fun demuxSegment(bytes: ByteArray) {
+            parseBoxes(bytes, 0, bytes.size) { type, hSize, bSize, pStart ->
+                if (type == "moof") {
+                    parseMoof(bytes, pStart - hSize, pStart + (bSize - hSize).toInt())
+                }
+                false
+            }
+        }
+
+        private fun parseMoof(bytes: ByteArray, moofStart: Int, moofEnd: Int) {
+            parseBoxes(bytes, moofStart + 8, moofEnd) { type, _, bSize, pStart ->
+                if (type == "traf") {
+                    parseTraf(bytes, moofStart, pStart, pStart + (bSize - 8).toInt())
+                }
+                false
+            }
+        }
+
+        private fun parseTraf(bytes: ByteArray, moofStart: Int, start: Int, end: Int) {
+            var trackId = 1
+            var defaultSampleDuration = 1000
+            var defaultSampleSize = 0
+            var defaultSampleFlags = 0
+            var baseMediaDecodeTime = 0L
+
+            parseBoxes(bytes, start, end) { type, _, bSize, pStart ->
+                when (type) {
+                    "tfhd" -> {
+                        if (pStart + 8 <= end) {
+                            val flags = ((bytes[pStart + 1].toInt() and 0xFF) shl 16) or
+                                    ((bytes[pStart + 2].toInt() and 0xFF) shl 8) or
+                                    (bytes[pStart + 3].toInt() and 0xFF)
+                            trackId = readInt(bytes, pStart + 4)
+                            var ptr = pStart + 8
+                            if ((flags and 0x000001) != 0) ptr += 8
+                            if ((flags and 0x000002) != 0) ptr += 4
+                            if ((flags and 0x000008) != 0 && ptr + 4 <= end) {
+                                defaultSampleDuration = readInt(bytes, ptr)
+                                ptr += 4
+                            }
+                            if ((flags and 0x000010) != 0 && ptr + 4 <= end) {
+                                defaultSampleSize = readInt(bytes, ptr)
+                                ptr += 4
+                            }
+                            if ((flags and 0x000020) != 0 && ptr + 4 <= end) {
+                                defaultSampleFlags = readInt(bytes, ptr)
+                            }
+                        }
+                    }
+                    "tfdt" -> {
+                        if (pStart + 8 <= end) {
+                            val version = bytes[pStart].toInt() and 0xFF
+                            baseMediaDecodeTime = if (version == 1 && pStart + 12 <= end) {
+                                readLong(bytes, pStart + 4)
+                            } else {
+                                readInt(bytes, pStart + 4).toLong() and 0xFFFFFFFFL
+                            }
+                        }
+                    }
+                    "trun" -> {
+                        if (pStart + 8 <= end) {
+                            val flags = ((bytes[pStart + 1].toInt() and 0xFF) shl 16) or
+                                    ((bytes[pStart + 2].toInt() and 0xFF) shl 8) or
+                                    (bytes[pStart + 3].toInt() and 0xFF)
+                            val sampleCount = readInt(bytes, pStart + 4)
+                            var ptr = pStart + 8
+                            var dataOffset = 0
+                            if ((flags and 0x000001) != 0 && ptr + 4 <= end) {
+                                dataOffset = readInt(bytes, ptr)
+                                ptr += 4
+                            }
+                            var firstSampleFlags = 0
+                            if ((flags and 0x000004) != 0 && ptr + 4 <= end) {
+                                firstSampleFlags = readInt(bytes, ptr)
+                                ptr += 4
+                            }
+
+                            val isVideo = trackIsVideoMap[trackId] ?: true
+                            val timescale = trackTimescales[trackId] ?: 1000
+                            val targetTrack = if (isVideo) videoTrack else audioTrack
+
+                            var currentDts = baseMediaDecodeTime
+                            var sampleDataPtr = moofStart + dataOffset
+
+                            val hasSampleDuration = (flags and 0x000100) != 0
+                            val hasSampleSize = (flags and 0x000200) != 0
+                            val hasSampleFlags = (flags and 0x000400) != 0
+                            val hasSampleCts = (flags and 0x000800) != 0
+
+                            for (i in 0 until sampleCount) {
+                                val sDuration = if (hasSampleDuration && ptr + 4 <= end) { val v = readInt(bytes, ptr); ptr += 4; v } else defaultSampleDuration
+                                val sSize = if (hasSampleSize && ptr + 4 <= end) { val v = readInt(bytes, ptr); ptr += 4; v } else defaultSampleSize
+                                val sFlags = if (hasSampleFlags && ptr + 4 <= end) { val v = readInt(bytes, ptr); ptr += 4; v } else if (i == 0 && (flags and 0x000004) != 0) firstSampleFlags else defaultSampleFlags
+                                val sCts = if (hasSampleCts && ptr + 4 <= end) { val v = readInt(bytes, ptr); ptr += 4; v } else 0
+
+                                if (sSize > 0 && sampleDataPtr + sSize <= bytes.size) {
+                                    val samplePayload = bytes.copyOfRange(sampleDataPtr, sampleDataPtr + sSize)
+                                    val dtsMs = currentDts * 1000L / timescale
+                                    val ptsMs = (currentDts + sCts) * 1000L / timescale
+                                    val isKeyFrame = ((sFlags ushr 16) and 0x01) == 0
+
+                                    targetTrack.samples.add(DemuxedSample(samplePayload, ptsMs, dtsMs, isKeyFrame))
+                                    sampleDataPtr += sSize
+                                }
+                                currentDts += sDuration
+                            }
+                        }
+                    }
+                }
+                false
+            }
+        }
+
+        private fun parseBoxes(bytes: ByteArray, start: Int, end: Int, listener: (type: String, headerSize: Int, boxSize: Long, payloadStart: Int) -> Boolean) {
+            var offset = start
+            while (offset + 8 <= end) {
+                val b0 = bytes[offset].toLong() and 0xFF
+                val b1 = bytes[offset + 1].toLong() and 0xFF
+                val b2 = bytes[offset + 2].toLong() and 0xFF
+                val b3 = bytes[offset + 3].toLong() and 0xFF
+                var boxSize = (b0 shl 24) or (b1 shl 16) or (b2 shl 8) or b3
+                val type = String(bytes, offset + 4, 4, Charsets.ISO_8859_1)
+                var headerSize = 8
+                if (boxSize == 1L && offset + 16 <= end) {
+                    boxSize = 0L
+                    for (i in 0 until 8) {
+                        boxSize = (boxSize shl 8) or (bytes[offset + 8 + i].toLong() and 0xFF)
+                    }
+                    headerSize = 16
+                } else if (boxSize == 0L) {
+                    boxSize = (end - offset).toLong()
+                }
+                if (boxSize < headerSize || offset + boxSize > end) break
+
+                val payloadStart = offset + headerSize
+                val stop = listener(type, headerSize, boxSize, payloadStart)
+                if (stop) break
+
+                offset += boxSize.toInt()
+            }
+        }
+
+        private fun readInt(bytes: ByteArray, offset: Int): Int {
+            return ((bytes[offset].toInt() and 0xFF) shl 24) or
+                    ((bytes[offset + 1].toInt() and 0xFF) shl 16) or
+                    ((bytes[offset + 2].toInt() and 0xFF) shl 8) or
+                    (bytes[offset + 3].toInt() and 0xFF)
+        }
+
+        private fun readLong(bytes: ByteArray, offset: Int): Long {
+            var v = 0L
+            for (i in 0 until 8) {
+                v = (v shl 8) or (bytes[offset + i].toLong() and 0xFF)
+            }
+            return v
+        }
     }
 
     class TsDemuxer {
@@ -877,29 +1254,38 @@ object HlsDownloader {
             for (trIndex in tracks.indices) {
                 val tr = tracks[trIndex]
                 val sampleMetas = mutableListOf<SampleMeta>()
-                val samples = tr.samples
 
-                var trackMinPts = Long.MAX_VALUE
-                var trackMaxPts = 0L
+                val samples = if (tr.isVideo) {
+                    tr.samples.sortedBy { if (it.dtsMs >= 0) it.dtsMs else it.ptsMs }
+                } else {
+                    tr.samples
+                }
+
+                var trackMinDts = Long.MAX_VALUE
+                var trackMaxDts = 0L
 
                 for (i in samples.indices) {
                     val s = samples[i]
                     val pts = Math.max(0L, s.ptsMs - minPts)
-                    val dts = Math.max(0L, s.dtsMs - minPts)
+                    val dts = Math.max(0L, (if (s.dtsMs >= 0) s.dtsMs else s.ptsMs) - minPts)
 
-                    if (pts < trackMinPts) trackMinPts = pts
-                    if (pts > trackMaxPts) trackMaxPts = pts
+                    if (dts < trackMinDts) trackMinDts = dts
+                    if (dts > trackMaxDts) trackMaxDts = dts
 
-                    val nextPts = if (i + 1 < samples.size) Math.max(0L, samples[i + 1].ptsMs - minPts) else pts + 40L
-                    val delta = (nextPts - pts).toInt().coerceAtLeast(1)
+                    val nextDts = if (i + 1 < samples.size) {
+                        val nextS = samples[i + 1]
+                        Math.max(0L, (if (nextS.dtsMs >= 0) nextS.dtsMs else nextS.ptsMs) - minPts)
+                    } else dts + 40L
+
+                    val dtsDelta = (nextDts - dts).toInt().coerceAtLeast(1)
                     val ctsOffset = (pts - dts).toInt()
 
                     val sampleOffset = currentFileOffset + mdatBaos.size()
                     mdatBaos.write(s.data)
-                    sampleMetas.add(SampleMeta(sampleOffset, s.data.size, delta, ctsOffset, s.isKeyFrame))
+                    sampleMetas.add(SampleMeta(sampleOffset, s.data.size, dtsDelta, ctsOffset, s.isKeyFrame))
                 }
 
-                val trackDuration = if (samples.isNotEmpty()) trackMaxPts - trackMinPts + 40L else 0L
+                val trackDuration = if (samples.isNotEmpty()) trackMaxDts - trackMinDts + 40L else 0L
                 trackMetas.add(TrackMeta(tr, trIndex + 1, sampleMetas, trackDuration))
             }
 
@@ -1129,6 +1515,26 @@ object HlsDownloader {
                                             }
                                             dos.writeInt(keyIndices.size)
                                             for (idx in keyIndices) dos.writeInt(idx)
+                                        }
+
+                                        val hasCtts = tm.sampleMetas.any { it.compositionOffset != 0 }
+                                        if (hasCtts) {
+                                            writeFullBox("ctts", 0, 0) {
+                                                class CttsEntry(var count: Int, val offset: Int)
+                                                val cttsEntries = mutableListOf<CttsEntry>()
+                                                for (s in tm.sampleMetas) {
+                                                    if (cttsEntries.isNotEmpty() && cttsEntries.last().offset == s.compositionOffset) {
+                                                        cttsEntries.last().count++
+                                                    } else {
+                                                        cttsEntries.add(CttsEntry(1, s.compositionOffset))
+                                                    }
+                                                }
+                                                dos.writeInt(cttsEntries.size)
+                                                for (e in cttsEntries) {
+                                                    dos.writeInt(e.count)
+                                                    dos.writeInt(e.offset)
+                                                }
+                                            }
                                         }
                                     }
                                 }
