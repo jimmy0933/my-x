@@ -3,6 +3,8 @@ package com.example.xdownloader.api
 import com.example.xdownloader.data.MediaItem
 import com.example.xdownloader.data.MediaType
 import com.google.gson.JsonArray
+import java.text.SimpleDateFormat
+import java.util.Locale
 import com.google.gson.JsonObject
 
 object TweetParser {
@@ -79,7 +81,17 @@ object TweetParser {
             val text = legacy.get("full_text")?.asString ?: ""
 
             // Wait, created_at string to timestamp parsing might be needed. We'll use 0 for now.
-            val createdAt = 0L
+                        val createdAtStr = legacy.get("created_at")?.asString
+            var createdAt = 0L
+            if (createdAtStr != null) {
+                try {
+                    val sdf = SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy", Locale.US)
+                    val date = sdf.parse(createdAtStr)
+                    if (date != null) createdAt = date.time
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
 
             val authorName = userLegacy.get("name")?.asString ?: ""
             val authorScreenName = userLegacy.get("screen_name")?.asString ?: ""
