@@ -243,6 +243,7 @@ object HlsDownloader {
                 val fmp4Demuxer = Fmp4Demuxer()
                 videoPlaylist.initSegment?.let { initSeg ->
                     val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
+                    if (initBytes == null) return false
                     if (initBytes != null) fmp4Demuxer.demuxInit(initBytes)
                     downloadedSegments++
                     onProgress?.invoke(downloadedSegments, totalSegments)
@@ -285,6 +286,7 @@ object HlsDownloader {
                 val tsDemuxer = TsDemuxer()
                 videoPlaylist.initSegment?.let { initSeg ->
                     val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
+                    if (initBytes == null) return false
                     if (initBytes != null) tsDemuxer.demux(initBytes)
                     downloadedSegments++
                     onProgress?.invoke(downloadedSegments, totalSegments)
