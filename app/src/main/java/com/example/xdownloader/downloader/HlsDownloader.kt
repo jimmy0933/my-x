@@ -216,11 +216,10 @@ object HlsDownloader {
             val videoPlaylistContent = fetchUrlText(resolved.videoPlaylistUrl) ?: return false
             val videoPlaylist = parseMediaPlaylist(videoPlaylistContent, resolved.videoPlaylistUrl)
 
-            val audioPlaylist = resolved.audioPlaylistUrl?.let { audioUrl ->
-                fetchUrlText(audioUrl)?.let { content ->
-                    parseMediaPlaylist(content, audioUrl)
-                }
-            }
+            val audioPlaylist = if (resolved.audioPlaylistUrl != null) {
+                val content = fetchUrlText(resolved.audioPlaylistUrl) ?: throw Exception("Failed to fetch audio playlist")
+                parseMediaPlaylist(content, resolved.audioPlaylistUrl)
+            } else null
 
             var downloadedSegments = 0
             val totalVideoSegs = videoPlaylist.segments.size + if (videoPlaylist.initSegment != null) 1 else 0
@@ -228,7 +227,7 @@ object HlsDownloader {
             val totalSegments = totalVideoSegs + totalAudioSegs
 
             val firstSegment = videoPlaylist.segments.firstOrNull()
-            val firstSegmentBytes = firstSegment?.let { fetchSegmentBytes(it) }
+            val firstSegmentBytes = firstSegment?.let { fetchSegmentBytes(it) ?: throw Exception("Failed to fetch first segment") }
 
             val isFmp4 = (videoPlaylist.format == StreamFormat.MP4) ||
                     (firstSegmentBytes != null && firstSegmentBytes.size >= 8 &&
@@ -243,8 +242,8 @@ object HlsDownloader {
                 val fmp4Demuxer = Fmp4Demuxer()
                 videoPlaylist.initSegment?.let { initSeg ->
                     val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
-                    if (initBytes == null) return false
-                    if (initBytes != null) fmp4Demuxer.demuxInit(initBytes)
+                    if (initBytes == null) throw Exception("Failed to fetch init segment")
+                    fmp4Demuxer.demuxInit(initBytes)
                     downloadedSegments++
                     onProgress?.invoke(downloadedSegments, totalSegments)
                 }
@@ -267,8 +266,8 @@ object HlsDownloader {
 
                 if (audioPlaylist != null) {
                     audioPlaylist.initSegment?.let { initSeg ->
-                        val bytes = fetchSegmentBytes(initSeg)
-                        if (bytes != null) fmp4Demuxer.demuxInit(bytes)
+                        val bytes = fetchSegmentBytes(initSeg) ?: throw Exception("Failed to fetch audio init segment")
+                        fmp4Demuxer.demuxInit(bytes)
                         downloadedSegments++
                         onProgress?.invoke(downloadedSegments, totalSegments)
                     }
@@ -286,8 +285,8 @@ object HlsDownloader {
                 val tsDemuxer = TsDemuxer()
                 videoPlaylist.initSegment?.let { initSeg ->
                     val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
-                    if (initBytes == null) return false
-                    if (initBytes != null) tsDemuxer.demux(initBytes)
+                    if (initBytes == null) throw Exception("Failed to fetch init segment")
+                    tsDemuxer.demux(initBytes)
                     downloadedSegments++
                     onProgress?.invoke(downloadedSegments, totalSegments)
                 }
@@ -312,8 +311,8 @@ object HlsDownloader {
 
                 if (audioPlaylist != null) {
                     audioPlaylist.initSegment?.let { initSeg ->
-                        val bytes = fetchSegmentBytes(initSeg)
-                        if (bytes != null) tsDemuxer.demux(bytes)
+                        val bytes = fetchSegmentBytes(initSeg) ?: throw Exception("Failed to fetch audio init segment")
+                        tsDemuxer.demux(bytes)
                         downloadedSegments++
                         onProgress?.invoke(downloadedSegments, totalSegments)
                     }
@@ -599,11 +598,13 @@ object HlsDownloader {
     }
 
     data class DemuxedSample(
-        val data: ByteArray,
+        var data: ByteArray?, // Might be null if written to file
         val ptsMs: Long,
         val dtsMs: Long,
         val isKeyFrame: Boolean = false
-    )
+    ) {
+        val size: Int get() = data?.size ?: 0
+    }
 
     class DemuxedTrack(
         val isVideo: Boolean
@@ -1275,9 +1276,22 @@ object HlsDownloader {
             if (minPts == Long.MAX_VALUE) minPts = 0L
 
             var currentFileOffset = ftypBytes.size.toLong() + 16L
-            val mdatBaos = java.io.ByteArrayOutputStream()
-
             val trackMetas = mutableListOf<TrackMeta>()
+
+            var totalDataSize = 0L
+            for (trIndex in tracks.indices) {
+                val tr = tracks[trIndex]
+                for (s in tr.samples) {
+                    totalDataSize += s.size
+                }
+            }
+
+            outputStream.write(ftypBytes)
+
+            val mdatHeaderDos = java.io.DataOutputStream(outputStream)
+            mdatHeaderDos.writeInt(1)
+            mdatHeaderDos.write("mdat".toByteArray(Charsets.ISO_8859_1))
+            mdatHeaderDos.writeLong(totalDataSize + 16L)
 
             for (trIndex in tracks.indices) {
                 val tr = tracks[trIndex]
@@ -1308,25 +1322,23 @@ object HlsDownloader {
                     val dtsDelta = (nextDts - dts).toInt().coerceAtLeast(1)
                     val ctsOffset = (pts - dts).toInt()
 
-                    val sampleOffset = currentFileOffset + mdatBaos.size()
-                    mdatBaos.write(s.data)
-                    sampleMetas.add(SampleMeta(sampleOffset, s.data.size, dtsDelta, ctsOffset, s.isKeyFrame))
+                    val sampleOffset = currentFileOffset
+                    val dataToWrite = s.data
+                    val writeSize = s.size
+                    if (dataToWrite != null) {
+                        outputStream.write(dataToWrite)
+                    }
+                    currentFileOffset += writeSize
+
+                    sampleMetas.add(SampleMeta(sampleOffset, writeSize, dtsDelta, ctsOffset, s.isKeyFrame))
+
+                    // Allow GC of sample data after written
+                    s.data = null
                 }
 
                 val trackDuration = if (samples.isNotEmpty()) trackMaxDts - trackMinDts + 40L else 0L
                 trackMetas.add(TrackMeta(tr, trIndex + 1, sampleMetas, trackDuration))
             }
-
-            val mdatPayload = mdatBaos.toByteArray()
-            val totalMdatSize = 16L + mdatPayload.size
-
-            outputStream.write(ftypBytes)
-
-            val mdatHeaderDos = java.io.DataOutputStream(outputStream)
-            mdatHeaderDos.writeInt(1)
-            mdatHeaderDos.write("mdat".toByteArray(Charsets.ISO_8859_1))
-            mdatHeaderDos.writeLong(totalMdatSize)
-            outputStream.write(mdatPayload)
 
             val maxDurationMs = trackMetas.maxOfOrNull { it.durationMs } ?: 1000L
 

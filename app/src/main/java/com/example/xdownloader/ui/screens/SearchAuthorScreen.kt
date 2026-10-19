@@ -10,9 +10,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.xdownloader.api.TweetParser
 import com.example.xdownloader.api.XApiClient
+import com.example.xdownloader.api.ApiResult
 import com.example.xdownloader.database.AppDatabase
 import com.example.xdownloader.database.FollowEntity
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,8 +52,9 @@ fun SearchAuthorScreen() {
                     scope.launch {
                         isSearching = true
                         val cleanQuery = query.trim().removePrefix("@")
-                        val userId = apiClient.getUserIdByScreenName(cleanQuery)
-                        if (userId != null) {
+                        val result = apiClient.getUserIdByScreenName(cleanQuery)
+                        if (result is ApiResult.Success) {
+                            val userId = result.data
                             db.followDao().insertFollow(
                                 FollowEntity(
                                     authorId = userId,
@@ -59,8 +65,16 @@ fun SearchAuthorScreen() {
                                 )
                             )
                             Toast.makeText(context, "已追蹤 @$cleanQuery", Toast.LENGTH_SHORT).show()
+                            query = ""
                         } else {
-                            Toast.makeText(context, "找不到該作者", Toast.LENGTH_SHORT).show()
+                            val errMsg = when (result) {
+                                is ApiResult.Unauthorized -> result.message
+                                is ApiResult.RateLimited -> result.message
+                                is ApiResult.NetworkError -> result.message
+                                is ApiResult.ParsingError -> result.message
+                                else -> "找不到該作者 (Author not found)"
+                            }
+                            Toast.makeText(context, errMsg, Toast.LENGTH_SHORT).show()
                         }
                         isSearching = false
                     }
@@ -97,18 +111,22 @@ fun SearchAuthorScreen() {
                     val tweetId = idMatch.groupValues[1]
 
                     scope.launch {
-                        val tweetJson = apiClient.getTweet(tweetId)
-                        if (tweetJson != null) {
-                            val result = tweetJson.getAsJsonObject("data")
-                                ?.getAsJsonObject("tweetResult")
-                                ?.getAsJsonObject("result")
-                            if (result != null) {
-                                tweetData = TweetParser.parseSingleTweetResult(result)
-                            } else {
-                                Toast.makeText(context, "無法解析貼文", Toast.LENGTH_SHORT).show()
+                        when (val result = apiClient.getTweet(tweetId)) {
+                            is ApiResult.Success -> {
+                                val tweetJson = result.data
+                                val resultObj = tweetJson.getAsJsonObject("data")
+                                    ?.getAsJsonObject("tweetResult")
+                                    ?.getAsJsonObject("result")
+                                if (resultObj != null) {
+                                    tweetData = TweetParser.parseSingleTweetResult(resultObj)
+                                } else {
+                                    Toast.makeText(context, "無法解析貼文", Toast.LENGTH_SHORT).show()
+                                }
                             }
-                        } else {
-                            Toast.makeText(context, "無法取得貼文", Toast.LENGTH_SHORT).show()
+                            is ApiResult.Unauthorized -> Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                            is ApiResult.RateLimited -> Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                            is ApiResult.NetworkError -> Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                            is ApiResult.ParsingError -> Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
                         }
                     }
                 },
@@ -120,6 +138,34 @@ fun SearchAuthorScreen() {
             if (tweetData != null) {
                 Spacer(modifier = Modifier.height(16.dp))
                 TweetCard(tweetData!!)
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Text("已追蹤作者 (僅此 App 內)", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val following by db.followDao().getAllFollowing().collectAsState(initial = emptyList())
+            if (following.isEmpty()) {
+                Text("目前沒有追蹤任何人", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(following, key = { it.authorId }) { author ->
+                        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("@${author.authorScreenName}", style = MaterialTheme.typography.bodyLarge)
+                                IconButton(onClick = {
+                                    scope.launch {
+                                        db.followDao().deleteFollow(author)
+                                        Toast.makeText(context, "已取消追蹤 @${author.authorScreenName}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }) {
+                                    Icon(androidx.compose.material.icons.Icons.Default.Close, contentDescription = "Unfollow")
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

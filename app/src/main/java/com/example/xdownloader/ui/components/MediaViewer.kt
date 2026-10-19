@@ -23,13 +23,17 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.xdownloader.data.MediaItem
 import com.example.xdownloader.data.MediaType
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MediaViewer(mediaItems: List<MediaItem>, initialPage: Int = 0) {
     if (mediaItems.isEmpty()) return
 
     val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { mediaItems.size })
+    var showDownloadSheet by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(
@@ -40,8 +44,22 @@ fun MediaViewer(mediaItems: List<MediaItem>, initialPage: Int = 0) {
             if (item.type == MediaType.IMAGE) {
                 ZoomableImage(url = item.url)
             } else {
-                VideoPlayer(url = item.url)
+                VideoPlayer(url = item.url, isActive = page == pagerState.currentPage)
             }
+        }
+
+        IconButton(
+            onClick = { showDownloadSheet = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp)
+                .background(Color.Black.copy(alpha = 0.5f), shape = MaterialTheme.shapes.small)
+        ) {
+            Icon(Icons.Default.Download, contentDescription = "Download", tint = Color.White)
+        }
+
+        if (showDownloadSheet) {
+            MediaDownloadBottomSheet(mediaItems = listOf(mediaItems[pagerState.currentPage]), onDismiss = { showDownloadSheet = false })
         }
 
         if (mediaItems.size > 1) {
@@ -93,13 +111,43 @@ fun ZoomableImage(url: String) {
     }
 }
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-fun VideoPlayer(url: String) {
+fun VideoPlayer(url: String, isActive: Boolean) {
     val context = LocalContext.current
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(url))
             prepare()
+        }
+    }
+
+    LaunchedEffect(url) {
+        exoPlayer.setMediaItem(ExoMediaItem.fromUri(url))
+        exoPlayer.prepare()
+    }
+
+    LaunchedEffect(isActive) {
+        if (!isActive) {
+            exoPlayer.pause()
+        } else {
+            exoPlayer.play()
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                exoPlayer.pause()
+            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && isActive) {
+                exoPlayer.play()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 

@@ -26,31 +26,61 @@ fun MainAppScreen() {
             NavigationBar {
                 NavigationBarItem(
                     selected = currentRoute == "home",
-                    onClick = { navController.navigate("home") },
+                    onClick = {
+                        navController.navigate("home") {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                     icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
                     label = { Text("動態") }
                 )
                 NavigationBarItem(
                     selected = currentRoute == "favorites",
-                    onClick = { navController.navigate("favorites") },
+                    onClick = {
+                        navController.navigate("favorites") {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                     icon = { Icon(Icons.Default.Favorite, contentDescription = "Favorites") },
                     label = { Text("最愛") }
                 )
                 NavigationBarItem(
                     selected = currentRoute == "search",
-                    onClick = { navController.navigate("search") },
+                    onClick = {
+                        navController.navigate("search") {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                     icon = { Icon(Icons.Default.PersonAdd, contentDescription = "Search") },
                     label = { Text("搜尋") }
                 )
                 NavigationBarItem(
                     selected = currentRoute == "downloads",
-                    onClick = { navController.navigate("downloads") },
+                    onClick = {
+                        navController.navigate("downloads") {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                     icon = { Icon(Icons.Default.Download, contentDescription = "Downloads") },
                     label = { Text("下載") }
                 )
                 NavigationBarItem(
                     selected = currentRoute == "settings",
-                    onClick = { navController.navigate("settings") },
+                    onClick = {
+                        navController.navigate("settings") {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                     icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
                     label = { Text("設定") }
                 )

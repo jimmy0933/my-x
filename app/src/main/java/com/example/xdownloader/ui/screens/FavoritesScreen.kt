@@ -17,7 +17,10 @@ import com.example.xdownloader.data.MediaItem
 import com.example.xdownloader.data.MediaType
 import com.example.xdownloader.database.AppDatabase
 import com.example.xdownloader.database.FavoriteEntity
+import com.example.xdownloader.ui.components.MediaDownloadBottomSheet
+import androidx.compose.material.icons.filled.Download
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +56,11 @@ fun FavoritesScreen() {
 @Composable
 fun FavoriteCard(fav: FavoriteEntity) {
     var showViewer by remember { mutableStateOf(false) }
+    var showDownloadSheet by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val db = AppDatabase.getDatabase(context)
+
     val urls = fav.mediaUrls.split(",").filter { it.isNotEmpty() }
     val types = fav.mediaTypes.split(",").filter { it.isNotEmpty() }
 
@@ -67,14 +75,33 @@ fun FavoriteCard(fav: FavoriteEntity) {
 
     Card(modifier = Modifier.fillMaxWidth().padding(8.dp).clickable { if (mediaItems.isNotEmpty()) showViewer = true }) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("${fav.authorName} (@${fav.authorScreenName})", style = MaterialTheme.typography.titleMedium)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("${fav.authorName} (@${fav.authorScreenName})", style = MaterialTheme.typography.titleMedium)
+                IconButton(onClick = {
+                    scope.launch {
+                        db.favoriteDao().deleteFavorite(fav)
+                        android.widget.Toast.makeText(context, "Removed from favorites", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }) {
+                    Icon(androidx.compose.material.icons.Icons.Default.Close, contentDescription = "Remove")
+                }
+            }
             Spacer(modifier = Modifier.height(4.dp))
             Text(fav.text, style = MaterialTheme.typography.bodyMedium)
             if (fav.deleted) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("⚠️ 此貼文已被刪除或無法存取", color = MaterialTheme.colorScheme.error)
             }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                IconButton(onClick = { showDownloadSheet = true }) {
+                    Icon(androidx.compose.material.icons.Icons.Default.Download, contentDescription = "Download")
+                }
+            }
         }
+    }
+
+    if (showDownloadSheet && mediaItems.isNotEmpty()) {
+        MediaDownloadBottomSheet(mediaItems = mediaItems, onDismiss = { showDownloadSheet = false })
     }
 
     if (showViewer && mediaItems.isNotEmpty()) {

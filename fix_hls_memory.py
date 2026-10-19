@@ -3,39 +3,33 @@ import re
 with open('app/src/main/java/com/example/xdownloader/downloader/HlsDownloader.kt', 'r') as f:
     content = f.read()
 
-# Replace file extension and mime type logic.
-content = re.sub(
-    r'val hlsFileName = "X_\$\{System\.currentTimeMillis\(\)\}_\$\{UUID\.randomUUID\(\)\.toString\(\)\.substring\(0, 8\)\}\$\{format\.extension\}"\n\s*val hlsMimeType = format\.mimeType',
-    r'val hlsFileName = "X_${System.currentTimeMillis()}_${UUID.randomUUID().toString().substring(0, 8)}.mp4"\n                val hlsMimeType = "video/mp4"',
-    content
-)
+# Replace DemuxedSample and DemuxedTrack definitions
+new_track = """    data class DemuxedSample(
+        var data: ByteArray?, // Might be null if written to file
+        var dataOffset: Long = 0L,
+        val dataSize: Int,
+        val ptsMs: Long,
+        val dtsMs: Long,
+        val isKeyFrame: Boolean = false
+    )
 
-content = content.replace("val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)",
-"""val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
-                    if (initBytes == null) return false""")
+    class DemuxedTrack(
+        val isVideo: Boolean
+    ) {
+        val samples = mutableListOf<DemuxedSample>()
+        var sps: ByteArray? = null
+        var pps: ByteArray? = null
+        var audioSpecificConfig: ByteArray? = null
+        var sampleRate: Int = 44100
+        var channelCount: Int = 2
+    }"""
+content = re.sub(r"    data class DemuxedSample\([\s\S]*?channelCount: Int = 2\n    \}", new_track, content)
 
-content = content.replace("""val segBytes = fetchSegmentBytes(seg)
-                    if (segBytes != null) {
-                        fmp4Demuxer.demuxSegment(segBytes)
-                    }""", """val segBytes = fetchSegmentBytes(seg) ?: return false
-                    fmp4Demuxer.demuxSegment(segBytes)""")
+# Change Fmp4Demuxer and TsDemuxer sample additions
+content = content.replace("targetTrack.samples.add(DemuxedSample(samplePayload, ptsMs, dtsMs, isKeyFrame))", "targetTrack.samples.add(DemuxedSample(samplePayload, 0L, samplePayload.size, ptsMs, dtsMs, isKeyFrame))")
+content = content.replace("videoTrack.samples.add(DemuxedSample(frameData, ptsMs, dtsMs, isKeyFrame))", "videoTrack.samples.add(DemuxedSample(frameData, 0L, frameData.size, ptsMs, dtsMs, isKeyFrame))")
+content = content.replace("audioTrack.samples.add(DemuxedSample(payload, samplePts, samplePts, true))", "audioTrack.samples.add(DemuxedSample(payload, 0L, payload.size, samplePts, samplePts, true))")
 
-content = content.replace("""val audioInitBytes = fetchSegmentBytes(initSeg)
-                        if (audioInitBytes != null) audioDemuxer.demuxInit(audioInitBytes)""",
-"""val audioInitBytes = fetchSegmentBytes(initSeg) ?: return false
-                        audioDemuxer.demuxInit(audioInitBytes)""")
-
-content = content.replace("""val segBytes = fetchSegmentBytes(seg)
-                        if (segBytes != null) {
-                            audioDemuxer.demuxSegment(segBytes)
-                        }""", """val segBytes = fetchSegmentBytes(seg) ?: return false
-                        audioDemuxer.demuxSegment(segBytes)""")
-
-content = content.replace("""val segBytes = fetchSegmentBytes(seg)
-                    if (segBytes != null) {
-                        tsDemuxer.demuxSegment(segBytes)
-                    }""", """val segBytes = fetchSegmentBytes(seg) ?: return false
-                    tsDemuxer.demuxSegment(segBytes)""")
-
-with open('app/src/main/java/com/example/xdownloader/downloader/HlsDownloader.kt', 'w') as f:
-    f.write(content)
+# Change MP4 Muxer memory handling - write interleaved mdat out immediately
+# We need to change how the final writing is done. It uses a big ByteArrayOutputStream inside packageMp4.
+print("Need to adapt packageMp4 directly to disk instead of memory.")
