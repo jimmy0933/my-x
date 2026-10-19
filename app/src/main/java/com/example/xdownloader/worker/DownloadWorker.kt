@@ -51,7 +51,8 @@ class DownloadWorker(
             return@withContext Result.failure(workDataOf("error" to "Foreground service start failed"))
         }
 
-        dao.updateProgress(url, "DOWNLOADING", 0)
+        val workId = id.toString()
+        dao.updateProgressIfWorkIdMatches(url, "DOWNLOADING", 0, workId)
 
         var lastProgressTime = 0L
 

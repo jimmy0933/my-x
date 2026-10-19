@@ -12,12 +12,16 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import com.example.xdownloader.database.AppDatabase
 import com.example.xdownloader.database.DownloadEntity
+import com.example.xdownloader.repository.DownloadRepository
+import com.example.xdownloader.data.MediaItem
+import com.example.xdownloader.data.MediaType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloadsScreen() {
     val context = LocalContext.current
     val db = remember { AppDatabase.getDatabase(context) }
+    val repo = remember { DownloadRepository(context) }
 
     var downloads by remember { mutableStateOf<List<DownloadEntity>>(emptyList()) }
 
@@ -44,10 +48,9 @@ fun DownloadsScreen() {
                                     Text("狀態: ${dl.status}", style = MaterialTheme.typography.bodyMedium)
                                     if (dl.status == "DOWNLOADING" || dl.status == "PENDING") {
                                         TextButton(onClick = {
-                                            androidx.work.WorkManager.getInstance(context).cancelUniqueWork("dl_${dl.url}")
                                             val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
                                             scope.launch {
-                                                db.downloadDao().updateProgress(dl.url, "CANCELLED", 0)
+                                                repo.cancelDownload(dl.url)
                                             }
                                         }) {
                                             Text("取消 (Cancel)")
@@ -56,19 +59,14 @@ fun DownloadsScreen() {
                                         TextButton(onClick = {
                                             val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
                                             scope.launch {
-                                                db.downloadDao().updateProgress(dl.url, "PENDING", 0)
-                                                val data = androidx.work.Data.Builder()
-                                                    .putString("url", dl.url)
-                                                    .putString("type", dl.type)
-                                                    .putString("title", dl.title)
-                                                    .build()
-
-                                                val request = androidx.work.OneTimeWorkRequestBuilder<com.example.xdownloader.worker.DownloadWorker>()
-                                                    .setInputData(data)
-                                                    .setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build())
-                                                    .build()
-
-                                                androidx.work.WorkManager.getInstance(context).enqueueUniqueWork("dl_${dl.url}", androidx.work.ExistingWorkPolicy.REPLACE, request)
+                                                val mediaItem = MediaItem(
+                                                    id = dl.title.removePrefix("Download "),
+                                                    url = dl.url,
+                                                    thumbnailUrl = "",
+                                                    type = if (dl.type == "IMAGE") MediaType.IMAGE else MediaType.VIDEO,
+                                                    quality = "Original"
+                                                )
+                                                repo.enqueueDownload(mediaItem, forceRetry = true)
                                             }
                                         }) {
                                             Text("重試 (Retry)")

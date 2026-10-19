@@ -17,7 +17,8 @@ data class DownloadEntity(
     val status: String, // "PENDING", "DOWNLOADING", "COMPLETED", "FAILED"
     val progress: Int = 0,
     val filePath: String = "",
-    val error: String = ""
+    val error: String = "",
+    val workId: String = ""
 )
 
 @Dao
@@ -36,4 +37,7 @@ interface DownloadDao {
 
     @Query("UPDATE downloads SET status = :status, progress = :progress WHERE url = :url")
     suspend fun updateProgress(url: String, status: String, progress: Int)
+
+    @Query("UPDATE downloads SET status = :status, progress = :progress WHERE url = :url AND workId = :workId")
+    suspend fun updateProgressIfWorkIdMatches(url: String, status: String, progress: Int, workId: String)
 }
