@@ -31,6 +31,7 @@ import com.example.xdownloader.data.MediaItem
 import com.example.xdownloader.data.MediaType
 import com.example.xdownloader.database.AppDatabase
 import com.example.xdownloader.database.DownloadEntity
+import com.example.xdownloader.repository.DownloadRepository
 import com.example.xdownloader.worker.DownloadWorker
 import kotlinx.coroutines.launch
 
@@ -42,7 +43,7 @@ fun MediaDownloadBottomSheet(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val db = remember { AppDatabase.getDatabase(context) }
+    val repo = remember { DownloadRepository(context) }
     var selectedFilter by remember { mutableStateOf<MediaType?>(null) }
 
     val filteredItems = remember(mediaItems, selectedFilter) {
@@ -52,28 +53,7 @@ fun MediaDownloadBottomSheet(
 
     fun enqueueDownload(item: MediaItem) {
         scope.launch {
-            db.downloadDao().insert(
-                DownloadEntity(
-                    url = item.url,
-                    type = if (item.type == MediaType.IMAGE) "IMAGE" else "VIDEO",
-                    title = "Download ${item.id}",
-                    status = "PENDING"
-                )
-            )
-
-            val workManager = WorkManager.getInstance(context)
-            val data = Data.Builder()
-                .putString("url", item.url)
-                .putString("type", if (item.type == MediaType.IMAGE) "IMAGE" else "VIDEO")
-                .putString("title", "Download ${item.id}")
-                .build()
-
-            val request = OneTimeWorkRequestBuilder<DownloadWorker>()
-                .setInputData(data)
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                .build()
-
-            workManager.enqueueUniqueWork("dl_${item.url}", ExistingWorkPolicy.REPLACE, request)
+            repo.enqueueDownload(item)
         }
     }
 

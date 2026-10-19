@@ -1,0 +1,235 @@
+--- app/src/main/java/com/example/xdownloader/ui/screens/HomeScreen.kt
++++ app/src/main/java/com/example/xdownloader/ui/screens/HomeScreen.kt
+@@ -42,6 +42,7 @@
+     var isLoading by remember { mutableStateOf(false) }
+     var isLoadingMore by remember { mutableStateOf(false) }
+     var errorMessage by remember { mutableStateOf<String?>(null) }
++    var paginationError by remember { mutableStateOf<String?>(null) }
+
+     // authorId to nextCursor mapping
+     val cursors = remember { mutableMapOf<String, String>() }
+@@ -49,14 +50,24 @@
+     val hasMore = remember { mutableMapOf<String, Boolean>() }
+
++    var currentFetchGeneration by remember { mutableStateOf(0) }
+
+     @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+     val pullRefreshState = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
++    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
++
++    val shouldLoadMore = remember {
++        androidx.compose.runtime.derivedStateOf {
++            val totalItems = listState.layoutInfo.totalItemsCount
++            val lastVisibleItemIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
++            totalItems > 0 && lastVisibleItemIndex >= totalItems - 2 && hasMore.values.any { it } && !isLoadingMore && !isLoading && paginationError == null
++        }
++    }
+
+-    val fetchTimeline: suspend (isRefresh: Boolean, isLoadMore: Boolean) -> Unit = { isRefresh, isLoadMore ->
++    suspend fun fetchTimelineFn(isRefresh: Boolean, isLoadMore: Boolean) {
+         if (!apiClient.isConfigured()) {
+             errorMessage = "請先至設定填寫登入憑證 (Please configure credentials in settings)"
+         } else {
++            val myGeneration = ++currentFetchGeneration
++
++            val initialCursors = mutableMapOf<String, String>()
+             if (isRefresh) {
+-                cursors.clear()
+-                hasMore.clear()
++                // Revert possible later
+             } else {
++                initialCursors.putAll(cursors)
++            }
++
+             if (!isLoadMore) {
+                 isLoading = !pullRefreshState.isRefreshing
+             } else {
+@@ -83,57 +94,96 @@
+                 } else {
+                     val allTweets = if (isRefresh) mutableListOf() else tweets.toMutableList()
+                     var partialFailureMsg: String? = null
++                    var anySuccess = false
++
++                    val newCursors = mutableMapOf<String, String>()
++                    val newHasMore = mutableMapOf<String, Boolean>()
+
+                     for (author in following) {
+-                        if (hasMore[author.authorId] == false) continue
++                        if (!isRefresh && hasMore[author.authorId] == false) continue
+
+                         val cursor = if (isRefresh) null else cursors[author.authorId]
+                         when (val result = apiClient.getUserMedia(author.authorId, cursor)) {
+                             is ApiResult.Success -> {
++                                anySuccess = true
+                                 val (parsedTweets, nextCursor) = TweetParser.parseMediaTimeline(result.data)
++
+                                 allTweets.addAll(parsedTweets)
++
+-                                if (nextCursor != null && nextCursor.isNotEmpty()) {
+-                                    cursors[author.authorId] = nextCursor
+-                                    hasMore[author.authorId] = true
++                                if (nextCursor != null && nextCursor.isNotEmpty() && nextCursor != cursor) {
++                                    newCursors[author.authorId] = nextCursor
++                                    newHasMore[author.authorId] = true
+                                 } else {
+-                                    hasMore[author.authorId] = false
++                                    newHasMore[author.authorId] = false
+                                 }
+                             }
+-                            is ApiResult.Unauthorized -> partialFailureMsg = result.message
+-                            is ApiResult.RateLimited -> partialFailureMsg = result.message
+-                            is ApiResult.NetworkError -> partialFailureMsg = result.message
+-                            is ApiResult.ParsingError -> partialFailureMsg = result.message
++                            is ApiResult.Unauthorized -> {
++                                partialFailureMsg = result.message
++                                if (isRefresh) allTweets.addAll(tweets.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
++                            }
++                            is ApiResult.RateLimited -> {
++                                partialFailureMsg = result.message
++                                if (isRefresh) allTweets.addAll(tweets.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
++                            }
++                            is ApiResult.NetworkError -> {
++                                partialFailureMsg = result.message
++                                if (isRefresh) allTweets.addAll(tweets.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
++                            }
++                            is ApiResult.ParsingError -> {
++                                partialFailureMsg = result.message
++                                if (isRefresh) allTweets.addAll(tweets.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
++                            }
+                         }
+                     }
+
+-                    val distinctTweets = allTweets.distinctBy { it.tweetId }.sortedByDescending { it.createdAt }
+-
+-                    val parsedTweetsAdded = distinctTweets.size - (if (isRefresh) 0 else tweets.size)
+-                    tweets = distinctTweets
++                    if (myGeneration == currentFetchGeneration) {
++                        if (isRefresh) {
++                            cursors.clear()
++                            hasMore.clear()
++                        }
++                        cursors.putAll(newCursors)
++                        for ((k, v) in newHasMore) hasMore[k] = v
+
+-                    if (distinctTweets.isEmpty() && partialFailureMsg != null) {
+-                        if (isLoadMore) paginationError = partialFailureMsg else errorMessage = partialFailureMsg
+-                    } else if (partialFailureMsg == null) {
+-                        errorMessage = null
+-                        paginationError = null
+-                    } else if (partialFailureMsg != null) {
+-                        if (isLoadMore) paginationError = partialFailureMsg
+-                        android.widget.Toast.makeText(context, "部分載入失敗: $partialFailureMsg", android.widget.Toast.LENGTH_LONG).show()
+-                    }
+-
+-                    if (isLoadMore && parsedTweetsAdded == 0 && hasMore.values.any { it } && partialFailureMsg == null) {
+-                        if (distinctTweets.isEmpty()) {
+-                             scope.launch { fetchTimeline(false, true) }
++                        val distinctTweets = allTweets.distinctBy { it.tweetId }.sortedByDescending { it.createdAt }
++
++                        val parsedTweetsAdded = distinctTweets.size - (if (isRefresh) 0 else tweets.size)
++
++                        if (anySuccess || (isRefresh && !anySuccess && distinctTweets.isNotEmpty())) {
++                            tweets = distinctTweets
++                        }
++
++                        if (distinctTweets.isEmpty() && partialFailureMsg != null && !anySuccess) {
++                            if (isLoadMore) paginationError = partialFailureMsg else errorMessage = partialFailureMsg
++                        } else if (partialFailureMsg == null) {
++                            errorMessage = null
++                            paginationError = null
++                        } else if (partialFailureMsg != null) {
++                            if (isLoadMore) paginationError = partialFailureMsg else errorMessage = null
++                            android.widget.Toast.makeText(context, "部分載入失敗: $partialFailureMsg", android.widget.Toast.LENGTH_LONG).show()
++                        }
++
++                        if (isLoadMore && parsedTweetsAdded == 0 && hasMore.values.any { it } && partialFailureMsg == null) {
++                            if (distinctTweets.isEmpty()) {
++                                 scope.launch { fetchTimelineFn(false, true) }
++                            }
+                         }
+                     }
+                 }
+             } catch (e: Exception) {
+-                if (tweets.isEmpty()) errorMessage = "發生非預期錯誤: ${e.message}"
+-                else if (isLoadMore) paginationError = "發生非預期錯誤: ${e.message}"
++                if (myGeneration == currentFetchGeneration) {
++                    if (tweets.isEmpty()) errorMessage = "發生非預期錯誤: ${e.message}"
++                    else if (isLoadMore) paginationError = "發生非預期錯誤: ${e.message}"
++                }
+             } finally {
+-                isLoading = false
+-                isLoadingMore = false
+-                pullRefreshState.endRefresh()
++                if (myGeneration == currentFetchGeneration) {
++                    isLoading = false
++                    isLoadingMore = false
++                    pullRefreshState.endRefresh()
++                }
+             }
+         }
+     }
+
+     LaunchedEffect(Unit) {
+-        fetchTimeline(true, false)
++        fetchTimelineFn(true, false)
+     }
+
+     Scaffold(
+@@ -192,7 +242,7 @@
+     ) { padding ->
+         if (pullRefreshState.isRefreshing) {
+             LaunchedEffect(true) {
+-                fetchTimeline(true, false)
++                fetchTimelineFn(true, false)
+             }
+         }
+
+@@ -206,7 +256,7 @@
+                     Button(onClick = {
+                         scope.launch {
+                             isLoading = true
+-                            fetchTimeline(tweets.isEmpty(), false) // resume if we have tweets, else refresh
++                            fetchTimelineFn(tweets.isEmpty(), false) // resume if we have tweets, else refresh
+                         }
+                     }) {
+                         Text("重試 (Retry)")
+@@ -215,22 +265,24 @@
+             } else {
+-                LazyColumn(modifier = Modifier.fillMaxSize()) {
++                LaunchedEffect(shouldLoadMore.value) {
++                    if (shouldLoadMore.value) {
++                        fetchTimelineFn(false, true)
++                    }
++                }
++
++                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                     items(tweets, key = { it.tweetId }) { tweet ->
+                         TweetCard(tweet)
+                     }
+-                    if (tweets.isNotEmpty() && hasMore.values.any { it }) {
++                    if (hasMore.values.any { it }) {
+                         item {
+-                            LaunchedEffect(Unit) {
+-                                if (!isLoadingMore) {
+-                                    fetchTimeline(false, true)
+-                                }
+-                            }
+                             Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+-                                if (isLoadingMore) CircularProgressIndicator()
++                                if (paginationError != null) {
++                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
++                                        Text(paginationError!!, color = MaterialTheme.colorScheme.error)
++                                        Spacer(modifier = Modifier.height(8.dp))
++                                        Button(onClick = {
++                                            paginationError = null
++                                            scope.launch { fetchTimelineFn(false, true) }
++                                        }) {
++                                            Text("重試載入更多 (Retry)")
++                                        }
++                                    }
++                                } else if (isLoadingMore || (tweets.isEmpty() && hasMore.values.any { it })) {
++                                    CircularProgressIndicator()
++                                }
+                             }
+                         }
+                     } else if (tweets.isNotEmpty()) {
