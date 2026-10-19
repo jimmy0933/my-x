@@ -23,6 +23,12 @@ object TweetParser {
         val tweets = mutableListOf<ParsedTweet>()
         var nextCursor: String? = null
 
+        if (json.has("errors") && (!json.has("data") || json.getAsJsonObject("data").keySet().isEmpty())) {
+            val errors = json.getAsJsonArray("errors")
+            val msg = if (errors.size() > 0) errors[0].asJsonObject.get("message")?.asString else "Unknown GraphQL Error"
+            throw Exception("GraphQL Error: $msg")
+        }
+
         try {
             val instructions = json.getAsJsonObject("data")
                 ?.getAsJsonObject("user")

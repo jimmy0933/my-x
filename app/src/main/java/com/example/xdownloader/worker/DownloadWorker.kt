@@ -2,6 +2,7 @@ package com.example.xdownloader.worker
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -22,10 +23,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.core.app.NotificationCompat
-
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import java.io.InputStream
 import java.io.OutputStream
+
 
 class DownloadWorker(
     private val context: Context,
@@ -38,10 +40,16 @@ class DownloadWorker(
         val title = inputData.getString("title") ?: "Download"
 
         createNotificationChannel()
-        setForeground(createForegroundInfo(title, 0))
-
         val db = AppDatabase.getDatabase(context)
         val dao = db.downloadDao()
+
+        try {
+            setForeground(createForegroundInfo(title, 0))
+        } catch (e: Exception) {
+            android.util.Log.e("DownloadWorker", "Failed to start foreground service", e)
+            dao.updateProgress(url, "FAILED", 0)
+            return@withContext Result.failure(workDataOf("error" to "Foreground service start failed"))
+        }
 
         dao.updateProgress(url, "DOWNLOADING", 0)
 
@@ -97,7 +105,12 @@ class DownloadWorker(
             .setOngoing(true)
             .build()
         val id = title.hashCode()
-        return androidx.work.ForegroundInfo(if(id == 0) 1 else id, notification)
+        val notificationId = if(id == 0) 1 else id
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            androidx.work.ForegroundInfo(notificationId, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            androidx.work.ForegroundInfo(notificationId, notification)
+        }
     }
 
     private suspend fun downloadDirectFile(urlStr: String, type: String, title: String, onProgress: suspend (Int) -> Unit): Boolean {
@@ -106,6 +119,8 @@ class DownloadWorker(
         var outputStream: OutputStream? = null
         var uri: Uri? = null
         var targetFile: File? = null
+        var copied = 0L
+        var length = 0
 
         try {
             val isImage = type == "IMAGE"
@@ -133,7 +148,7 @@ class DownloadWorker(
 
             if (connection.responseCode != HttpURLConnection.HTTP_OK) return false
 
-            val length = connection.contentLength
+            length = connection.contentLength
             inputStream = connection.inputStream
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -158,7 +173,7 @@ class DownloadWorker(
 
             if (outputStream == null) return false
 
-            var copied = 0L
+            copied = 0L
             val buffer = ByteArray(8 * 1024)
             var bytes = inputStream.read(buffer)
             while (bytes >= 0) {
@@ -169,27 +184,35 @@ class DownloadWorker(
                 bytes = inputStream.read(buffer)
             }
 
-            return !isStopped && copied > 0
+            return !isStopped && copied > 0 && (length <= 0 || copied >= length)
 
         } catch (e: Exception) {
             e.printStackTrace()
             return false
         } finally {
-            try { outputStream?.flush() } catch (e: Exception) {}
-            try { outputStream?.close() } catch (e: Exception) {}
+            var closeSuccess = false
+            try {
+                outputStream?.flush()
+                outputStream?.close()
+                closeSuccess = true
+            } catch (e: Exception) {}
             try { inputStream?.close() } catch (e: Exception) {}
             try { connection?.disconnect() } catch (e: Exception) {}
 
+            val downloadSuccess = !isStopped && copied > 0 && (length <= 0 || copied >= length)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri != null) {
                 val contentResolver = context.contentResolver
-                if (!isStopped) {
+                if (downloadSuccess && closeSuccess) {
                     val contentValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
                     contentResolver.update(uri, contentValues, null, null)
                 } else {
                     contentResolver.delete(uri, null, null)
                 }
-            } else if (isStopped && targetFile != null && targetFile.exists()) {
-                targetFile.delete()
+            } else if (targetFile != null && targetFile.exists()) {
+                if (!(downloadSuccess && closeSuccess)) {
+                    targetFile.delete()
+                }
             }
         }
     }
@@ -198,6 +221,7 @@ class DownloadWorker(
         var uri: Uri? = null
         var targetFile: File? = null
         var outputStream: OutputStream? = null
+        var success = false
         try {
             val fileName = "X_${System.currentTimeMillis()}_${UUID.randomUUID().toString().substring(0, 8)}.mp4"
 
@@ -221,7 +245,7 @@ class DownloadWorker(
 
             if (outputStream == null) return false
 
-            val success = try {
+            success = try {
                 HlsDownloader.downloadHlsStream(url, outputStream) { progress, total -> kotlinx.coroutines.runBlocking {
                     if (isStopped) throw Exception("Cancelled")
                     onProgress((progress * 100) / total) }
@@ -236,19 +260,27 @@ class DownloadWorker(
             e.printStackTrace()
             return false
         } finally {
-            try { outputStream?.flush() } catch (e: Exception) {}
-            try { outputStream?.close() } catch (e: Exception) {}
+            var closeSuccess = false
+            try {
+                outputStream?.flush()
+                outputStream?.close()
+                closeSuccess = true
+            } catch (e: Exception) {}
+
+            val isComplete = success && !isStopped
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri != null) {
                 val contentResolver = context.contentResolver
-                if (!isStopped) {
+                if (isComplete && closeSuccess) {
                     val contentValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
                     contentResolver.update(uri, contentValues, null, null)
                 } else {
                     contentResolver.delete(uri, null, null)
                 }
-            } else if (isStopped && targetFile != null && targetFile.exists()) {
-                targetFile.delete()
+            } else if (targetFile != null && targetFile.exists()) {
+                if (!(isComplete && closeSuccess)) {
+                    targetFile.delete()
+                }
             }
         }
     }

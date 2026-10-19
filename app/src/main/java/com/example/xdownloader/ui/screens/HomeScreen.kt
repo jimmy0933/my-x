@@ -7,6 +7,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
@@ -15,6 +17,7 @@ import com.example.xdownloader.database.FavoriteEntity
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -45,36 +48,41 @@ fun HomeScreen() {
     // authorId to hasMore mapping
     val hasMore = remember { mutableMapOf<String, Boolean>() }
 
-    LaunchedEffect(Unit) {
+
+    @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+    val pullRefreshState = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
+
+    val fetchTimeline: suspend (isRefresh: Boolean, isLoadMore: Boolean) -> Unit = { isRefresh, isLoadMore ->
         if (!apiClient.isConfigured()) {
             errorMessage = "請先至設定填寫登入憑證 (Please configure credentials in settings)"
-            return@LaunchedEffect
-        }
-
-        suspend fun loadTweets(isRefresh: Boolean = false) {
+        } else {
             if (isRefresh) {
                 cursors.clear()
                 hasMore.clear()
             }
-            isLoading = !isRefresh
-            errorMessage = null
+            if (!isLoadMore) {
+                isLoading = !pullRefreshState.isRefreshing
+            } else {
+                isLoadingMore = true
+            }
+
             try {
                 val following = db.followDao().getAllFollowing().first()
                 if (following.isEmpty()) {
                     errorMessage = "目前沒有追蹤任何人 (No follows yet)"
                 } else {
-                    val allTweets = if (isRefresh) mutableListOf<TweetParser.ParsedTweet>() else tweets.toMutableList()
+                    val allTweets = if (isRefresh) mutableListOf() else tweets.toMutableList()
                     var partialFailureMsg: String? = null
 
                     for (author in following) {
-                        if (hasMore[author.authorId] == false) continue // Reached end for this author
+                        if (hasMore[author.authorId] == false) continue
 
-                        val cursor = cursors[author.authorId]
+                        val cursor = if (isRefresh) null else cursors[author.authorId]
                         when (val result = apiClient.getUserMedia(author.authorId, cursor)) {
                             is ApiResult.Success -> {
                                 val (parsedTweets, nextCursor) = TweetParser.parseMediaTimeline(result.data)
                                 allTweets.addAll(parsedTweets)
-                                if (nextCursor != null) {
+                                if (nextCursor != null && nextCursor.isNotEmpty()) {
                                     cursors[author.authorId] = nextCursor
                                     hasMore[author.authorId] = true
                                 } else {
@@ -88,11 +96,14 @@ fun HomeScreen() {
                         }
                     }
 
-                    tweets = allTweets.distinctBy { it.tweetId }.sortedByDescending { it.createdAt }
+                    val distinctTweets = allTweets.distinctBy { it.tweetId }.sortedByDescending { it.createdAt }
+                    tweets = distinctTweets
 
-                    if (allTweets.isEmpty() && partialFailureMsg != null) {
+                    if (distinctTweets.isEmpty() && partialFailureMsg != null) {
                         errorMessage = partialFailureMsg
-                    } else if (partialFailureMsg != null && isRefresh) {
+                    } else if (partialFailureMsg == null) {
+                        errorMessage = null
+                    } else if (partialFailureMsg != null) {
                         android.widget.Toast.makeText(context, "部分載入失敗: $partialFailureMsg", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
@@ -100,52 +111,22 @@ fun HomeScreen() {
                 if (tweets.isEmpty()) errorMessage = "發生非預期錯誤: ${e.message}"
             } finally {
                 isLoading = false
+                isLoadingMore = false
+                pullRefreshState.endRefresh()
             }
         }
+    }
 
-        loadTweets(isRefresh = true)
+    LaunchedEffect(Unit) {
+        fetchTimeline(true, false)
     }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("追蹤動態 (Home)") }) }
     ) { padding ->
-        val pullRefreshState = rememberPullToRefreshState()
         if (pullRefreshState.isRefreshing) {
             LaunchedEffect(true) {
-                isLoading = true
-                cursors.clear()
-                hasMore.clear()
-                try {
-                    val following = db.followDao().getAllFollowing().first()
-                    if (following.isEmpty()) {
-                        errorMessage = "目前沒有追蹤任何人 (No follows yet)"
-                    } else {
-                        val allTweets = mutableListOf<TweetParser.ParsedTweet>()
-                        var partialFailureMsg: String? = null
-
-                        for (author in following) {
-                            when (val result = apiClient.getUserMedia(author.authorId)) {
-                                is ApiResult.Success -> {
-                                    val (parsedTweets, nextCursor) = TweetParser.parseMediaTimeline(result.data)
-                                    allTweets.addAll(parsedTweets)
-                                    if (nextCursor != null) {
-                                        cursors[author.authorId] = nextCursor
-                                        hasMore[author.authorId] = true
-                                    } else {
-                                        hasMore[author.authorId] = false
-                                    }
-                                }
-                                is ApiResult.Unauthorized -> partialFailureMsg = result.message
-                                is ApiResult.RateLimited -> partialFailureMsg = result.message
-                                is ApiResult.NetworkError -> partialFailureMsg = result.message
-                                is ApiResult.ParsingError -> partialFailureMsg = result.message
-                            }
-                        }
-
-                        tweets = allTweets.distinctBy { it.tweetId }.sortedByDescending { it.createdAt }
-                        if (allTweets.isEmpty() && partialFailureMsg != null) errorMessage = partialFailureMsg
-                    }
-                } catch(e:Exception){} finally { pullRefreshState.endRefresh(); isLoading = false }
+                fetchTimeline(true, false)
             }
         }
 
@@ -158,33 +139,8 @@ fun HomeScreen() {
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(onClick = {
                         scope.launch {
-                            // Quick refresh
                             isLoading = true
-                            errorMessage = null
-                            try {
-                                val following = db.followDao().getAllFollowing().first()
-                                if (following.isEmpty()) {
-                                    errorMessage = "目前沒有追蹤任何人 (No follows yet)"
-                                } else {
-                                    val allTweets = mutableListOf<TweetParser.ParsedTweet>()
-                                    var partialFailureMsg: String? = null
-
-                                    for (author in following) {
-                                        when (val result = apiClient.getUserMedia(author.authorId)) {
-                                            is ApiResult.Success -> {
-                                                val (parsedTweets, _) = TweetParser.parseMediaTimeline(result.data)
-                                                allTweets.addAll(parsedTweets)
-                                            }
-                                            is ApiResult.Unauthorized -> partialFailureMsg = result.message
-                                            is ApiResult.RateLimited -> partialFailureMsg = result.message
-                                            is ApiResult.NetworkError -> partialFailureMsg = result.message
-                                            is ApiResult.ParsingError -> partialFailureMsg = result.message
-                                        }
-                                    }
-                                    tweets = allTweets.distinctBy { it.tweetId }
-                                    if (allTweets.isEmpty() && partialFailureMsg != null) errorMessage = partialFailureMsg
-                                }
-                            } catch(e:Exception){} finally { isLoading = false }
+                            fetchTimeline(tweets.isEmpty(), false) // resume if we have tweets, else refresh
                         }
                     }) {
                         Text("重試 (Retry)")
@@ -199,29 +155,7 @@ fun HomeScreen() {
                         item {
                             LaunchedEffect(Unit) {
                                 if (!isLoadingMore) {
-                                    isLoadingMore = true
-                                    try {
-                                        val following = db.followDao().getAllFollowing().first()
-                                        val allTweets = tweets.toMutableList()
-                                        for (author in following) {
-                                            if (hasMore[author.authorId] == false) continue
-                                            val cursor = cursors[author.authorId]
-                                            when (val result = apiClient.getUserMedia(author.authorId, cursor)) {
-                                                is ApiResult.Success -> {
-                                                    val (parsedTweets, nextCursor) = TweetParser.parseMediaTimeline(result.data)
-                                                    allTweets.addAll(parsedTweets)
-                                                    if (nextCursor != null) {
-                                                        cursors[author.authorId] = nextCursor
-                                                        hasMore[author.authorId] = true
-                                                    } else {
-                                                        hasMore[author.authorId] = false
-                                                    }
-                                                }
-                                                else -> {}
-                                            }
-                                        }
-                                        tweets = allTweets.distinctBy { it.tweetId }.sortedByDescending { it.createdAt }
-                                    } catch(e:Exception){} finally { isLoadingMore = false }
+                                    fetchTimeline(false, true)
                                 }
                             }
                             Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
