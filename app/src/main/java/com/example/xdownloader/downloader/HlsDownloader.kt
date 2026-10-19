@@ -211,6 +211,7 @@ object HlsDownloader {
         outputStream: OutputStream,
         onProgress: ((downloadedSegments: Int, totalSegments: Int) -> Unit)? = null
     ): Boolean {
+        val cache = TempFileCache()
         return try {
             val resolved = resolveStream(playlistUrl)
             val videoPlaylistContent = fetchUrlText(resolved.videoPlaylistUrl) ?: return false
@@ -239,7 +240,7 @@ object HlsDownloader {
             val audioTrack: DemuxedTrack
 
             if (isFmp4) {
-                val fmp4Demuxer = Fmp4Demuxer()
+                val fmp4Demuxer = Fmp4Demuxer(cache)
                 videoPlaylist.initSegment?.let { initSeg ->
                     val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
                     if (initBytes == null) throw Exception("Failed to fetch init segment")
@@ -282,7 +283,7 @@ object HlsDownloader {
                 videoTrack = fmp4Demuxer.videoTrack
                 audioTrack = fmp4Demuxer.audioTrack
             } else {
-                val tsDemuxer = TsDemuxer()
+                val tsDemuxer = TsDemuxer(cache)
                 videoPlaylist.initSegment?.let { initSeg ->
                     val initBytes = if (initSeg == firstSegment) firstSegmentBytes else fetchSegmentBytes(initSeg)
                     if (initBytes == null) throw Exception("Failed to fetch init segment")
@@ -338,6 +339,8 @@ object HlsDownloader {
         } catch (e: Exception) {
             e.printStackTrace()
             false
+        } finally {
+            cache.close()
         }
     }
 
@@ -597,17 +600,67 @@ object HlsDownloader {
         return Pair(1280, 720)
     }
 
-    data class DemuxedSample(
-        var data: ByteArray?, // Might be null if written to file
+
+    class TempFileCache {
+        val tempFile = java.io.File.createTempFile("hls_cache", ".bin").apply { deleteOnExit() }
+        val output = java.io.FileOutputStream(tempFile, true)
+        val input = java.io.RandomAccessFile(tempFile, "r")
+        var currentOffset = 0L
+
+        fun store(data: ByteArray): Long {
+            val offset = currentOffset
+            output.write(data)
+            currentOffset += data.size
+            return offset
+        }
+
+        fun read(offset: Long, size: Int): ByteArray {
+            input.seek(offset)
+            val buf = ByteArray(size)
+            input.readFully(buf)
+            return buf
+        }
+
+        fun close() {
+            try { output.close() } catch(e: Exception) {}
+            try { input.close() } catch(e: Exception) {}
+            try { tempFile.delete() } catch(e: Exception) {}
+            currentOffset = 0L
+        }
+    }
+    class DemuxedSample(
+        _data: ByteArray?,
         val ptsMs: Long,
         val dtsMs: Long,
-        val isKeyFrame: Boolean = false
+        val isKeyFrame: Boolean = false,
+        cache: TempFileCache? = null
     ) {
-        val size: Int get() = data?.size ?: 0
+        var fileOffset: Long = -1L
+        val size: Int = _data?.size ?: 0
+        var boundCache: TempFileCache? = cache
+
+        init {
+            if (_data != null && boundCache != null) {
+                fileOffset = boundCache!!.store(_data)
+            } else if (_data != null && boundCache == null) {
+                // Should not happen, but just fallback to empty
+            }
+        }
+
+        var data: ByteArray?
+            get() = if (fileOffset != -1L && size > 0 && boundCache != null) boundCache!!.read(fileOffset, size) else null
+            set(value) {
+            }
+
+        operator fun component1(): ByteArray? = data
+        operator fun component2(): Long = ptsMs
+        operator fun component3(): Long = dtsMs
+        operator fun component4(): Boolean = isKeyFrame
     }
 
     class DemuxedTrack(
-        val isVideo: Boolean
+        val isVideo: Boolean,
+        val cache: TempFileCache
     ) {
         val samples = mutableListOf<DemuxedSample>()
         var sps: ByteArray? = null
@@ -617,9 +670,9 @@ object HlsDownloader {
         var channelCount: Int = 2
     }
 
-    class Fmp4Demuxer {
-        val videoTrack = DemuxedTrack(isVideo = true)
-        val audioTrack = DemuxedTrack(isVideo = false)
+    class Fmp4Demuxer(private val cache: TempFileCache) {
+        val videoTrack = DemuxedTrack(isVideo = true, cache = cache)
+        val audioTrack = DemuxedTrack(isVideo = false, cache = cache)
 
         private val trackTimescales = mutableMapOf<Int, Int>()
         private val trackIsVideoMap = mutableMapOf<Int, Boolean>()
@@ -851,7 +904,7 @@ object HlsDownloader {
                                     val ptsMs = (currentDts + sCts) * 1000L / timescale
                                     val isKeyFrame = ((sFlags ushr 16) and 0x01) == 0
 
-                                    targetTrack.samples.add(DemuxedSample(samplePayload, ptsMs, dtsMs, isKeyFrame))
+                                    targetTrack.samples.add(DemuxedSample(samplePayload, ptsMs, dtsMs, isKeyFrame, targetTrack.cache))
                                     sampleDataPtr += sSize
                                 }
                                 currentDts += sDuration
@@ -908,9 +961,9 @@ object HlsDownloader {
         }
     }
 
-    class TsDemuxer {
-        val videoTrack = DemuxedTrack(isVideo = true)
-        val audioTrack = DemuxedTrack(isVideo = false)
+    class TsDemuxer(private val cache: TempFileCache) {
+        val videoTrack = DemuxedTrack(isVideo = true, cache = cache)
+        val audioTrack = DemuxedTrack(isVideo = false, cache = cache)
 
         private var videoPid: Int = -1
         private var audioPid: Int = -1
@@ -1117,7 +1170,7 @@ object HlsDownloader {
 
             val frameData = frameBaos.toByteArray()
             if (frameData.isNotEmpty()) {
-                videoTrack.samples.add(DemuxedSample(frameData, ptsMs, dtsMs, isKeyFrame))
+                videoTrack.samples.add(DemuxedSample(frameData, ptsMs, dtsMs, isKeyFrame, videoTrack.cache))
             }
         }
 
@@ -1184,7 +1237,7 @@ object HlsDownloader {
                         if (frameLen > headerSize) {
                             val payload = data.copyOfRange(i + headerSize, i + frameLen)
                             val samplePts = if (currentPts >= 0) currentPts else 0L
-                            audioTrack.samples.add(DemuxedSample(payload, samplePts, samplePts, true))
+                            audioTrack.samples.add(DemuxedSample(payload, samplePts, samplePts, true, audioTrack.cache))
                             if (currentPts >= 0) {
                                 currentPts += (1024L * 1000L / audioTrack.sampleRate)
                             }

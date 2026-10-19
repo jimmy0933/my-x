@@ -73,7 +73,7 @@ fun MediaDownloadBottomSheet(
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
 
-            workManager.enqueueUniqueWork("dl_${item.url}", ExistingWorkPolicy.KEEP, request)
+            workManager.enqueueUniqueWork("dl_${item.url}", ExistingWorkPolicy.REPLACE, request)
         }
     }
 

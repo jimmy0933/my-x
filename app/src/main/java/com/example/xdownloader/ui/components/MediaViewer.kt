@@ -116,6 +116,7 @@ fun ZoomableImage(url: String) {
 fun VideoPlayer(url: String, isActive: Boolean) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    val currentIsActive by rememberUpdatedState(isActive)
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -137,12 +138,17 @@ fun VideoPlayer(url: String, isActive: Boolean) {
         }
     }
 
+    var wasPlaying by remember { mutableStateOf(true) }
+
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                wasPlaying = exoPlayer.isPlaying || exoPlayer.playWhenReady
                 exoPlayer.pause()
-            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && isActive) {
-                exoPlayer.play()
+            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                if (currentIsActive && wasPlaying) {
+                    exoPlayer.play()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

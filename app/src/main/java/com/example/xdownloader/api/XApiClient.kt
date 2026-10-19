@@ -120,7 +120,14 @@ class XApiClient(private val context: Context) {
 
                 val bodyStr = response.body?.string() ?: return@withContext ApiResult.ParsingError("空的回應 (Empty Response)")
                 try {
-                    ApiResult.Success(gson.fromJson(bodyStr, JsonObject::class.java))
+                    val jsonObj = gson.fromJson(bodyStr, JsonObject::class.java)
+                    if (jsonObj.has("errors") && (!jsonObj.has("data") || jsonObj.getAsJsonObject("data")?.keySet()?.isEmpty() == true)) {
+                        val errors = jsonObj.getAsJsonArray("errors")
+                        val msg = if (errors.size() > 0) errors[0].asJsonObject.get("message")?.asString else "Unknown GraphQL Error"
+                        ApiResult.ParsingError("GraphQL Error: $msg")
+                    } else {
+                        ApiResult.Success(jsonObj)
+                    }
                 } catch (e: Exception) {
                     ApiResult.ParsingError("JSON解析錯誤: ${e.message}")
                 }
@@ -153,7 +160,14 @@ class XApiClient(private val context: Context) {
 
                 val bodyStr = response.body?.string() ?: return@withContext ApiResult.ParsingError("空的回應 (Empty Response)")
                 try {
-                    ApiResult.Success(gson.fromJson(bodyStr, JsonObject::class.java))
+                    val jsonObj = gson.fromJson(bodyStr, JsonObject::class.java)
+                    if (jsonObj.has("errors") && (!jsonObj.has("data") || jsonObj.getAsJsonObject("data")?.keySet()?.isEmpty() == true)) {
+                        val errors = jsonObj.getAsJsonArray("errors")
+                        val msg = if (errors.size() > 0) errors[0].asJsonObject.get("message")?.asString else "Unknown GraphQL Error"
+                        ApiResult.ParsingError("GraphQL Error: $msg")
+                    } else {
+                        ApiResult.Success(jsonObj)
+                    }
                 } catch (e: Exception) {
                     ApiResult.ParsingError("JSON解析錯誤: ${e.message}")
                 }
