@@ -142,8 +142,11 @@ fun VideoPlayer(url: String, isActive: Boolean) {
 
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) {
                 wasPlaying = exoPlayer.isPlaying || exoPlayer.playWhenReady
+                exoPlayer.pause()
+            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                // Do not overwrite wasPlaying on STOP
                 exoPlayer.pause()
             } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 if (currentIsActive && wasPlaying) {

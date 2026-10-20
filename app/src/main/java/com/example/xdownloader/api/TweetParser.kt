@@ -23,19 +23,39 @@ object TweetParser {
         val tweets = mutableListOf<ParsedTweet>()
         var nextCursor: String? = null
 
-        if (json.has("errors") && (!json.has("data") || json.getAsJsonObject("data").keySet().isEmpty())) {
+        // If there are errors, we should check if data is null OR if it's missing the necessary nodes.
+        if (json.has("errors")) {
             val errors = json.getAsJsonArray("errors")
-            val msg = if (errors.size() > 0) errors[0].asJsonObject.get("message")?.asString else "Unknown GraphQL Error"
-            throw Exception("GraphQL Error: $msg")
+            if (errors.size() > 0) {
+                val msg = errors[0].asJsonObject.get("message")?.asString ?: "Unknown GraphQL Error"
+
+                // If it's a permission error or some data is fundamentally missing (like data.user == null)
+                val user = json.getAsJsonObject("data")?.getAsJsonObject("user")
+                if (user == null || user.isJsonNull || user.keySet().isEmpty()) {
+                    throw Exception("GraphQL Error: $msg")
+                }
+            }
         }
 
         try {
-            val instructions = json.getAsJsonObject("data")
-                ?.getAsJsonObject("user")
-                ?.getAsJsonObject("result")
-                ?.getAsJsonObject("timeline_v2")
-                ?.getAsJsonObject("timeline")
-                ?.getAsJsonArray("instructions") ?: return Pair(emptyList(), null)
+            val data = json.getAsJsonObject("data") ?: throw Exception("Missing data node")
+            val user = data.getAsJsonObject("user") ?: throw Exception("Missing user node")
+            val result = user.getAsJsonObject("result") ?: throw Exception("Missing result node (Possible rate limit or block)")
+
+            // Note: If timeline_v2 is missing, but user/result are there, it might just be an empty user or we have partial failure.
+            val timelineV2 = result.getAsJsonObject("timeline_v2")
+            if (timelineV2 == null) {
+                if (json.has("errors")) {
+                    val errors = json.getAsJsonArray("errors")
+                    val msg = if (errors.size() > 0) errors[0].asJsonObject.get("message")?.asString else "Unknown GraphQL Error"
+                    throw Exception("GraphQL Error: $msg")
+                } else {
+                    return Pair(emptyList(), null)
+                }
+            }
+
+            val timeline = timelineV2.getAsJsonObject("timeline") ?: return Pair(emptyList(), null)
+            val instructions = timeline.getAsJsonArray("instructions") ?: return Pair(emptyList(), null)
 
             for (i in 0 until instructions.size()) {
                 val inst = instructions[i].asJsonObject
@@ -65,7 +85,7 @@ object TweetParser {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            throw e // Throw so that calling code (ViewModel/ApiClient) knows it's an error and not an empty timeline
         }
 
         return Pair(tweets, nextCursor)

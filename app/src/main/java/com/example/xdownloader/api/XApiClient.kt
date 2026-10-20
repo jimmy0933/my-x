@@ -121,10 +121,16 @@ class XApiClient(private val context: Context) {
                 val bodyStr = response.body?.string() ?: return@withContext ApiResult.ParsingError("空的回應 (Empty Response)")
                 try {
                     val jsonObj = gson.fromJson(bodyStr, JsonObject::class.java)
-                    if (jsonObj.has("errors") && (!jsonObj.has("data") || jsonObj.getAsJsonObject("data")?.keySet()?.isEmpty() == true)) {
+                    if (jsonObj.has("errors")) {
                         val errors = jsonObj.getAsJsonArray("errors")
                         val msg = if (errors.size() > 0) errors[0].asJsonObject.get("message")?.asString else "Unknown GraphQL Error"
-                        ApiResult.ParsingError("GraphQL Error: $msg")
+                        val user = jsonObj.getAsJsonObject("data")?.getAsJsonObject("user")
+                        if (user == null || user.isJsonNull || user.keySet().isEmpty()) {
+                            ApiResult.ParsingError("GraphQL Error: $msg")
+                        } else {
+                            // Data exists partially, we can try to pass it to the parser which has stricter checks
+                            ApiResult.Success(jsonObj)
+                        }
                     } else {
                         ApiResult.Success(jsonObj)
                     }
@@ -161,10 +167,16 @@ class XApiClient(private val context: Context) {
                 val bodyStr = response.body?.string() ?: return@withContext ApiResult.ParsingError("空的回應 (Empty Response)")
                 try {
                     val jsonObj = gson.fromJson(bodyStr, JsonObject::class.java)
-                    if (jsonObj.has("errors") && (!jsonObj.has("data") || jsonObj.getAsJsonObject("data")?.keySet()?.isEmpty() == true)) {
+                    if (jsonObj.has("errors")) {
                         val errors = jsonObj.getAsJsonArray("errors")
                         val msg = if (errors.size() > 0) errors[0].asJsonObject.get("message")?.asString else "Unknown GraphQL Error"
-                        ApiResult.ParsingError("GraphQL Error: $msg")
+                        val user = jsonObj.getAsJsonObject("data")?.getAsJsonObject("user")
+                        if (user == null || user.isJsonNull || user.keySet().isEmpty()) {
+                            ApiResult.ParsingError("GraphQL Error: $msg")
+                        } else {
+                            // Data exists partially, we can try to pass it to the parser which has stricter checks
+                            ApiResult.Success(jsonObj)
+                        }
                     } else {
                         ApiResult.Success(jsonObj)
                     }

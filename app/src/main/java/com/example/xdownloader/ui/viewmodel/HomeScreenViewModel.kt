@@ -67,7 +67,7 @@ class HomeScreenViewModel(
                         if (!isRefresh && hasMore[author.authorId] == false) continue
 
                         val cursor = if (isRefresh) null else cursors[author.authorId]
-                        when (val result = apiClient.getUserMedia(author.authorId, cursor)) {
+                                                                        when (val result = apiClient.getUserMedia(author.authorId, cursor)) {
                             is ApiResult.Success -> {
                                 anySuccess = true
                                 val (parsedTweets, nextCursor) = TweetParser.parseMediaTimeline(result.data)
@@ -80,21 +80,19 @@ class HomeScreenViewModel(
                                     newHasMore[author.authorId] = false
                                 }
                             }
-                            is ApiResult.Unauthorized -> {
-                                partialFailureMsg = result.message
+                            is ApiResult.Unauthorized, is ApiResult.RateLimited, is ApiResult.NetworkError, is ApiResult.ParsingError -> {
+                                val message = when(result) {
+                                    is ApiResult.Unauthorized -> result.message
+                                    is ApiResult.RateLimited -> result.message
+                                    is ApiResult.NetworkError -> result.message
+                                    is ApiResult.ParsingError -> result.message
+                                    else -> "Unknown error"
+                                }
+                                partialFailureMsg = message
                                 if (isRefresh) allTweets.addAll(_tweets.value.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
-                            }
-                            is ApiResult.RateLimited -> {
-                                partialFailureMsg = result.message
-                                if (isRefresh) allTweets.addAll(_tweets.value.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
-                            }
-                            is ApiResult.NetworkError -> {
-                                partialFailureMsg = result.message
-                                if (isRefresh) allTweets.addAll(_tweets.value.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
-                            }
-                            is ApiResult.ParsingError -> {
-                                partialFailureMsg = result.message
-                                if (isRefresh) allTweets.addAll(_tweets.value.filter { it.authorScreenName == author.authorName || it.authorScreenName == author.authorScreenName })
+                                // Preserve cursor on failure
+                                cursors[author.authorId]?.let { newCursors[author.authorId] = it }
+                                hasMore[author.authorId]?.let { newHasMore[author.authorId] = it }
                             }
                         }
                     }

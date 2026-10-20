@@ -61,7 +61,7 @@ class DownloadWorker(
                 val now = System.currentTimeMillis()
                 if (now - lastProgressTime > 1000 || progress == 100) {
                     lastProgressTime = now
-                    dao.updateProgress(url, "DOWNLOADING", progress)
+                    dao.updateProgressIfWorkIdMatches(url, "DOWNLOADING", progress, workId)
                     setForegroundAsync(createForegroundInfo(title, progress))
                 }
             }
@@ -70,20 +70,20 @@ class DownloadWorker(
                 val now = System.currentTimeMillis()
                 if (now - lastProgressTime > 1000 || progress == 100) {
                     lastProgressTime = now
-                    dao.updateProgress(url, "DOWNLOADING", progress)
+                    dao.updateProgressIfWorkIdMatches(url, "DOWNLOADING", progress, workId)
                     setForegroundAsync(createForegroundInfo(title, progress))
                 }
             }
         }
 
         if (success && !isStopped) {
-            dao.updateProgress(url, "COMPLETED", 100)
+            dao.updateProgressIfWorkIdMatches(url, "COMPLETED", 100, workId)
             Result.success()
         } else {
             if (isStopped) {
-                dao.updateProgress(url, "CANCELLED", 0)
+                dao.updateProgressIfWorkIdMatches(url, "CANCELLED", 0, workId)
             } else {
-                dao.updateProgress(url, "FAILED", 0)
+                dao.updateProgressIfWorkIdMatches(url, "FAILED", 0, workId)
             }
             Result.failure(workDataOf("error" to "Download failed or cancelled"))
         }
@@ -122,6 +122,8 @@ class DownloadWorker(
         var targetFile: File? = null
         var copied = 0L
         var length = 0
+        var isEof = false
+        var closeSuccess = false
 
         try {
             val isImage = type == "IMAGE"
@@ -185,13 +187,11 @@ class DownloadWorker(
                 bytes = inputStream.read(buffer)
             }
 
-            return !isStopped && copied > 0 && (length <= 0 || copied >= length)
+            if (bytes < 0) isEof = true
 
         } catch (e: Exception) {
             e.printStackTrace()
-            return false
         } finally {
-            var closeSuccess = false
             try {
                 outputStream?.flush()
                 outputStream?.close()
@@ -200,22 +200,23 @@ class DownloadWorker(
             try { inputStream?.close() } catch (e: Exception) {}
             try { connection?.disconnect() } catch (e: Exception) {}
 
-            val downloadSuccess = !isStopped && copied > 0 && (length <= 0 || copied >= length)
+            val downloadSuccess = !isStopped && copied > 0 && isEof && closeSuccess
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri != null) {
                 val contentResolver = context.contentResolver
-                if (downloadSuccess && closeSuccess) {
+                if (downloadSuccess) {
                     val contentValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
                     contentResolver.update(uri, contentValues, null, null)
                 } else {
                     contentResolver.delete(uri, null, null)
                 }
             } else if (targetFile != null && targetFile.exists()) {
-                if (!(downloadSuccess && closeSuccess)) {
+                if (!downloadSuccess) {
                     targetFile.delete()
                 }
             }
         }
+        return !isStopped && copied > 0 && isEof && closeSuccess
     }
 
     private suspend fun downloadHlsVideo(url: String, title: String, onProgress: suspend (Int) -> Unit): Boolean {
@@ -223,6 +224,7 @@ class DownloadWorker(
         var targetFile: File? = null
         var outputStream: OutputStream? = null
         var success = false
+        var closeSuccess = false
         try {
             val fileName = "X_${System.currentTimeMillis()}_${UUID.randomUUID().toString().substring(0, 8)}.mp4"
 
@@ -256,33 +258,31 @@ class DownloadWorker(
                 false
             }
 
-            return success && !isStopped
         } catch (e: Exception) {
             e.printStackTrace()
-            return false
         } finally {
-            var closeSuccess = false
             try {
                 outputStream?.flush()
                 outputStream?.close()
                 closeSuccess = true
             } catch (e: Exception) {}
 
-            val isComplete = success && !isStopped
+            val isComplete = success && !isStopped && closeSuccess
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri != null) {
                 val contentResolver = context.contentResolver
-                if (isComplete && closeSuccess) {
+                if (isComplete) {
                     val contentValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
                     contentResolver.update(uri, contentValues, null, null)
                 } else {
                     contentResolver.delete(uri, null, null)
                 }
             } else if (targetFile != null && targetFile.exists()) {
-                if (!(isComplete && closeSuccess)) {
+                if (!isComplete) {
                     targetFile.delete()
                 }
             }
         }
+        return success && !isStopped && closeSuccess
     }
 }
