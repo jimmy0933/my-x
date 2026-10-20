@@ -1,4 +1,4 @@
-package com.example.xdownloader
+package com.example.xdownloader.api
 
 import com.example.xdownloader.api.TweetParser
 import com.google.gson.JsonObject
@@ -7,6 +7,26 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class TweetParserTest {
+    @Test
+    fun testParseMediaTimelineErrors() {
+        val jsonStr = """
+        {
+            "errors": [
+                {
+                    "message": "Some error"
+                }
+            ]
+        }
+        """
+        val jsonObj = JsonParser.parseString(jsonStr).asJsonObject
+        try {
+            TweetParser.parseMediaTimeline(jsonObj)
+            fail("Should throw Exception")
+        } catch (e: Exception) {
+            assertEquals("GraphQL Error: Some error", e.message)
+        }
+    }
+
     @Test
     fun testParseSingleTweetResult() {
         val jsonStr = """
