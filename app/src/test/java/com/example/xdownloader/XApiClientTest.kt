@@ -1,8 +1,6 @@
 package com.example.xdownloader
 
 import com.example.xdownloader.api.ApiResult
-import com.example.xdownloader.api.XApiClient
-import com.google.gson.JsonObject
 import org.junit.Test
 import org.junit.Assert.*
 
