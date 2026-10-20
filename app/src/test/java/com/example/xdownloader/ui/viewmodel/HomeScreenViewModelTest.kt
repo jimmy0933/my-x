@@ -60,8 +60,21 @@ class HomeScreenViewModelTest {
         val resultObj = JsonObject()
         val timelineV2Obj = JsonObject()
         val timelineObj = JsonObject()
+        val instructionsArray = com.google.gson.JsonArray()
 
-        timelineObj.add("instructions", com.google.gson.JsonArray())
+        val instObj = JsonObject()
+        instObj.addProperty("type", "TimelineAddEntries")
+        val entriesArray = com.google.gson.JsonArray()
+        val entryObj = JsonObject()
+        entryObj.addProperty("entryId", "cursor-bottom-12345")
+        val contentObj = JsonObject()
+        contentObj.addProperty("value", "new-cursor-value")
+        entryObj.add("content", contentObj)
+        entriesArray.add(entryObj)
+        instObj.add("entries", entriesArray)
+        instructionsArray.add(instObj)
+
+        timelineObj.add("instructions", instructionsArray)
         timelineV2Obj.add("timeline", timelineObj)
         resultObj.add("timeline_v2", timelineV2Obj)
         userObj.add("result", resultObj)
@@ -72,10 +85,27 @@ class HomeScreenViewModelTest {
         `when`(apiClient.getUserMedia("user2", null)).thenReturn(ApiResult.NetworkError("Failed"))
 
         val viewModel = HomeScreenViewModel(db, apiClient)
-        viewModel.loadTimeline(isRefresh = true)
 
+        // Initial load to set cursors
+        viewModel.loadTimeline(isRefresh = true)
         testDispatcher.scheduler.advanceUntilIdle()
 
+        // user1 should have a cursor, user2 should fail
         assertEquals("Failed", viewModel.errorMessage.value)
+        assertEquals("new-cursor-value", viewModel.cursors["user1"])
+
+        // Now set a dummy cursor for user2 manually to simulate previous success
+        viewModel.cursors["user2"] = "old-cursor-user2"
+        viewModel.hasMore["user2"] = true
+
+        `when`(apiClient.getUserMedia("user1", null)).thenReturn(ApiResult.NetworkError("Failed again"))
+        `when`(apiClient.getUserMedia("user2", null)).thenReturn(ApiResult.NetworkError("Failed again 2"))
+
+        // Refresh again, expect cursors to be retained on failure
+        viewModel.loadTimeline(isRefresh = true)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("new-cursor-value", viewModel.cursors["user1"])
+        assertEquals("old-cursor-user2", viewModel.cursors["user2"])
     }
 }

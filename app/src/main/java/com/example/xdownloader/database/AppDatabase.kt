@@ -17,9 +17,21 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        val MIGRATION_1_2 = object : Migration(1, 2) {
+                val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE downloads ADD COLUMN workId TEXT NOT NULL DEFAULT ''")
+                var hasWorkId = false
+                db.query("PRAGMA table_info(downloads)").use { cursor ->
+                    val nameIndex = cursor.getColumnIndex("name")
+                    while (cursor.moveToNext()) {
+                        if (cursor.getString(nameIndex) == "workId") {
+                            hasWorkId = true
+                            break
+                        }
+                    }
+                }
+                if (!hasWorkId) {
+                    db.execSQL("ALTER TABLE downloads ADD COLUMN workId TEXT NOT NULL DEFAULT ''")
+                }
             }
         }
 

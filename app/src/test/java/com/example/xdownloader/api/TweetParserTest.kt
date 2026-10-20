@@ -9,7 +9,8 @@ import org.junit.Assert.*
 class TweetParserTest {
     @Test
     fun testParseMediaTimelineErrors() {
-        val jsonStr = """
+        // Test case 1: Errors with entirely missing data block
+        val jsonStr1 = """
         {
             "errors": [
                 {
@@ -18,13 +19,70 @@ class TweetParserTest {
             ]
         }
         """
-        val jsonObj = JsonParser.parseString(jsonStr).asJsonObject
         try {
-            TweetParser.parseMediaTimeline(jsonObj)
+            TweetParser.parseMediaTimeline(JsonParser.parseString(jsonStr1).asJsonObject)
             fail("Should throw Exception")
         } catch (e: Exception) {
             assertEquals("GraphQL Error: Some error", e.message)
         }
+
+        // Test case 2: Errors with data present but missing required nodes (e.g. user)
+        val jsonStr2 = """
+        {
+            "data": {},
+            "errors": [
+                {
+                    "message": "Missing user"
+                }
+            ]
+        }
+        """
+        try {
+            TweetParser.parseMediaTimeline(JsonParser.parseString(jsonStr2).asJsonObject)
+            fail("Should throw Exception")
+        } catch (e: Exception) {
+            assertEquals("GraphQL Error: Missing user", e.message)
+        }
+
+        // Test case 3: Data present, timeline_v2 missing, errors present
+        val jsonStr3 = """
+        {
+            "data": {
+                "user": {
+                    "result": {}
+                }
+            },
+            "errors": [
+                {
+                    "message": "Rate limited"
+                }
+            ]
+        }
+        """
+        try {
+            TweetParser.parseMediaTimeline(JsonParser.parseString(jsonStr3).asJsonObject)
+            fail("Should throw Exception")
+        } catch (e: Exception) {
+            assertEquals("GraphQL Error: Rate limited", e.message)
+        }
+
+        // Test case 4: Valid empty list (no errors, timeline missing instructions)
+        val jsonStr4 = """
+        {
+            "data": {
+                "user": {
+                    "result": {
+                        "timeline_v2": {
+                            "timeline": {}
+                        }
+                    }
+                }
+            }
+        }
+        """
+        val (tweets, cursor) = TweetParser.parseMediaTimeline(JsonParser.parseString(jsonStr4).asJsonObject)
+        assertTrue(tweets.isEmpty())
+        assertNull(cursor)
     }
 
     @Test
