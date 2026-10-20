@@ -1,0 +1,11 @@
+--- app/src/main/java/com/example/xdownloader/api/XApiClient.kt
++++ app/src/main/java/com/example/xdownloader/api/XApiClient.kt
+@@ -194,7 +194,7 @@
+
+             val requestBuilder = Request.Builder().url(url)
+             val tempClient = if (overrideAuthToken != null && overrideCt0 != null) {
+-                OkHttpClient.Builder()
++                client.newBuilder()
+                     .addInterceptor { chain ->
+                         val r = chain.request().newBuilder()
+                             .header("Cookie", "auth_token=$overrideAuthToken; ct0=$overrideCt0")

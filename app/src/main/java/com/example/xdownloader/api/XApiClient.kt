@@ -22,13 +22,13 @@ sealed class ApiResult<out T> {
 }
 
 class XApiClient(private val context: Context) {
-    private val prefs = context.getSharedPreferences("x_auth", Context.MODE_PRIVATE)
+    private val authManager = AuthManager.getInstance(context)
     private val gson = Gson()
 
     private val client = OkHttpClient.Builder()
         .addInterceptor { chain ->
-            val authToken = prefs.getString("auth_token", "") ?: ""
-            val ct0 = prefs.getString("ct0", "") ?: ""
+            val authToken = authManager.getAuthToken() ?: ""
+            val ct0 = authManager.getCt0() ?: ""
 
             val requestBuilder = chain.request().newBuilder()
                 .header("Authorization", "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
@@ -50,8 +50,7 @@ class XApiClient(private val context: Context) {
         .build()
 
     fun isConfigured(): Boolean {
-        return prefs.getString("auth_token", "")?.isNotEmpty() == true &&
-               prefs.getString("ct0", "")?.isNotEmpty() == true
+        return authManager.isConfigured()
     }
 
     suspend fun getUserIdByScreenName(screenName: String): ApiResult<String> = withContext(Dispatchers.IO) {
@@ -190,13 +189,35 @@ class XApiClient(private val context: Context) {
         }
     }
 
-    suspend fun verifyCredentials(): ApiResult<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun verifyCredentials(overrideAuthToken: String? = null, overrideCt0: String? = null): ApiResult<String> = withContext(Dispatchers.IO) {
         try {
             val url = "https://twitter.com/i/api/1.1/account/verify_credentials.json"
-            val request = Request.Builder().url(url).build()
-            return@withContext client.newCall(request).execute().use { response ->
+
+            val requestBuilder = Request.Builder().url(url)
+            val tempClient = if (overrideAuthToken != null && overrideCt0 != null) {
+                client.newBuilder()
+                    .addInterceptor { chain ->
+                        val r = chain.request().newBuilder()
+                            .header("Cookie", "auth_token=$overrideAuthToken; ct0=$overrideCt0")
+                            .header("x-csrf-token", overrideCt0)
+                            .header("Authorization", "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
+                            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                            .build()
+                        chain.proceed(r)
+                    }.build()
+            } else {
+                client
+            }
+            return@withContext tempClient.newCall(requestBuilder.build()).execute().use { response ->
                 if (response.isSuccessful) {
-                    ApiResult.Success(true)
+                    val bodyStr = response.body?.string() ?: return@withContext ApiResult.ParsingError("空的回應")
+                    try {
+                        val jsonObj = gson.fromJson(bodyStr, JsonObject::class.java)
+                        val screenName = jsonObj.get("screen_name")?.asString ?: "Unknown"
+                        ApiResult.Success(screenName)
+                    } catch (e: Exception) {
+                        ApiResult.Success("已登入")
+                    }
                 } else {
                     when (response.code) {
                         401, 403 -> ApiResult.Unauthorized("驗證失敗，憑證無效")
