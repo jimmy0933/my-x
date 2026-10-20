@@ -63,14 +63,23 @@ fun HomeScreen() {
         }
     }
 
+    val authManager = remember { com.example.xdownloader.api.AuthManager.getInstance(context) }
+    val isConfigured by authManager.authState.collectAsState()
+
     LaunchedEffect(shouldLoadMore.value) {
         if (shouldLoadMore.value && !isLoading && !isLoadingMore && paginationError == null) {
             viewModel.loadMore()
         }
     }
 
+    LaunchedEffect(isConfigured) {
+        if (isConfigured) {
+            viewModel.loadTimeline(isRefresh = true)
+        }
+    }
+
     LaunchedEffect(Unit) {
-        if (tweets.isEmpty()) {
+        if (tweets.isEmpty() && isConfigured) {
             viewModel.loadTimeline(isRefresh = true)
         }
     }

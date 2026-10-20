@@ -96,7 +96,8 @@ fun MainAppScreen() {
             composable("favorites") { FavoritesScreen() }
             composable("search") { SearchAuthorScreen() }
             composable("downloads") { DownloadsScreen() }
-            composable("settings") { SettingsScreen() }
+            composable("settings") { SettingsScreen(navController) }
+            composable("login") { com.example.xdownloader.ui.screens.login.LoginScreen(navController) }
         }
     }
 }
