@@ -211,12 +211,23 @@ class XApiClient(private val context: Context) {
             return@withContext tempClient.newCall(requestBuilder.build()).execute().use { response ->
                 if (response.isSuccessful) {
                     val bodyStr = response.body?.string() ?: return@withContext ApiResult.ParsingError("空的回應")
+                    if (bodyStr.trim().startsWith("<") && bodyStr.contains("html", ignoreCase = true)) {
+                        return@withContext ApiResult.ParsingError("收到 HTML 回應，非預期的 JSON。可能已被阻擋或需重新登入。")
+                    }
                     try {
                         val jsonObj = gson.fromJson(bodyStr, JsonObject::class.java)
-                        val screenName = jsonObj.get("screen_name")?.asString ?: "Unknown"
-                        ApiResult.Success(screenName)
+                        if (jsonObj.has("errors")) {
+                            return@withContext ApiResult.ParsingError("回應包含錯誤訊息")
+                        }
+                        if (jsonObj.has("screen_name") && !jsonObj.get("screen_name").isJsonNull) {
+                            val screenName = jsonObj.get("screen_name").asString
+                            if (screenName.isNotEmpty()) {
+                                return@withContext ApiResult.Success(screenName)
+                            }
+                        }
+                        ApiResult.ParsingError("無法找到帳號資訊 (missing screen_name)")
                     } catch (e: Exception) {
-                        ApiResult.Success("已登入")
+                        ApiResult.ParsingError("JSON解析錯誤: ${e.message}")
                     }
                 } else {
                     when (response.code) {
