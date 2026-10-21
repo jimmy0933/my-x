@@ -16,7 +16,8 @@ import com.example.xdownloader.downloader.HlsDownloader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.HttpURLConnection
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.net.URL
 import java.util.UUID
 import android.app.Notification
@@ -33,6 +34,10 @@ class DownloadWorker(
     private val context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
+
+    companion object {
+        private val sharedClient = okhttp3.OkHttpClient()
+    }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val url = inputData.getString("url") ?: return@withContext Result.failure()
@@ -115,13 +120,10 @@ class DownloadWorker(
     }
 
     private suspend fun downloadDirectFile(urlStr: String, type: String, title: String, onProgress: suspend (Int) -> Unit): Boolean {
-        var connection: HttpURLConnection? = null
-        var inputStream: InputStream? = null
-        var outputStream: OutputStream? = null
         var uri: Uri? = null
         var targetFile: File? = null
         var copied = 0L
-        var length = 0
+        var length = 0L
         var isEof = false
         var closeSuccess = false
 
@@ -143,76 +145,73 @@ class DownloadWorker(
 
             val fileName = "X_${System.currentTimeMillis()}_${UUID.randomUUID().toString().substring(0, 8)}$ext"
 
-            val url = URL(urlStr)
-            connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.connect()
+            val client = sharedClient
+            val request = Request.Builder().url(urlStr).build()
 
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return false
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return false
 
-            length = connection.contentLength
-            inputStream = connection.inputStream
+                length = response.body?.contentLength() ?: -1L
+                val inputStream = response.body?.byteStream() ?: return false
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val collection = if (isImage) MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                                 else MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                var outputStream: java.io.OutputStream? = null
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val collection = if (isImage) MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                                     else MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
 
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, if (isImage) "${Environment.DIRECTORY_PICTURES}/XDownloader" else "${Environment.DIRECTORY_MOVIES}/XDownloader")
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    val contentValues = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, if (isImage) "${Environment.DIRECTORY_PICTURES}/XDownloader" else "${Environment.DIRECTORY_MOVIES}/XDownloader")
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    val contentResolver = context.contentResolver
+                    uri = contentResolver.insert(collection, contentValues)
+                    if (uri != null) {
+                        outputStream = contentResolver.openOutputStream(uri!!)
+                    }
+                } else {
+                    val targetDir = File(Environment.getExternalStoragePublicDirectory(if (isImage) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES), "XDownloader")
+                    if (!targetDir.exists()) targetDir.mkdirs()
+                    targetFile = File(targetDir, fileName)
+                    outputStream = targetFile!!.outputStream()
                 }
-                val contentResolver = context.contentResolver
-                uri = contentResolver.insert(collection, contentValues) ?: return false
-                outputStream = contentResolver.openOutputStream(uri)
-            } else {
-                val targetDir = File(Environment.getExternalStoragePublicDirectory(if (isImage) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES), "XDownloader")
-                if (!targetDir.exists()) targetDir.mkdirs()
-                targetFile = File(targetDir, fileName)
-                outputStream = targetFile.outputStream()
+
+                outputStream?.use { out ->
+                    copied = 0L
+                    val buffer = ByteArray(8 * 1024)
+                    var bytes = inputStream.read(buffer)
+                    while (bytes >= 0) {
+                        if (isStopped) break // Check cancellation
+                        out.write(buffer, 0, bytes)
+                        copied += bytes
+                        if (length > 0L) onProgress(((copied * 100) / length).toInt())
+                        bytes = inputStream.read(buffer)
+                    }
+                    if (bytes < 0) isEof = true
+                    out.flush()
+                    closeSuccess = true
+                }
             }
-
-            if (outputStream == null) return false
-
-            copied = 0L
-            val buffer = ByteArray(8 * 1024)
-            var bytes = inputStream.read(buffer)
-            while (bytes >= 0) {
-                if (isStopped) break // Check cancellation
-                outputStream.write(buffer, 0, bytes)
-                copied += bytes
-                if (length > 0) onProgress(((copied * 100) / length).toInt())
-                bytes = inputStream.read(buffer)
-            }
-
-            if (bytes < 0) isEof = true
 
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            try {
-                outputStream?.flush()
-                outputStream?.close()
-                closeSuccess = true
-            } catch (e: Exception) {}
-            try { inputStream?.close() } catch (e: Exception) {}
-            try { connection?.disconnect() } catch (e: Exception) {}
-
             val downloadSuccess = !isStopped && copied > 0 && isEof && closeSuccess
+            val localUri = uri
+            val localTargetFile = targetFile
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && localUri != null) {
                 val contentResolver = context.contentResolver
                 if (downloadSuccess) {
                     val contentValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-                    contentResolver.update(uri, contentValues, null, null)
+                    contentResolver.update(localUri, contentValues, null, null)
                 } else {
-                    contentResolver.delete(uri, null, null)
+                    contentResolver.delete(localUri, null, null)
                 }
-            } else if (targetFile != null && targetFile.exists()) {
+            } else if (localTargetFile != null && localTargetFile.exists()) {
                 if (!downloadSuccess) {
-                    targetFile.delete()
+                    localTargetFile.delete()
                 }
             }
         }

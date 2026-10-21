@@ -2,10 +2,11 @@ package com.example.xdownloader.downloader
 
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.HttpURLConnection
 import java.net.URL
 
 object HlsDownloader {
+    private val client = okhttp3.OkHttpClient()
+
 
     enum class StreamFormat(val extension: String, val mimeType: String) {
         MP4(".mp4", "video/mp4"),
@@ -362,79 +363,70 @@ object HlsDownloader {
     }
 
     fun fetchSegmentBytes(segment: Segment): ByteArray? {
-        var connection: HttpURLConnection? = null
         return try {
-            val url = URL(segment.url)
-            connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-
+            val reqBuilder = okhttp3.Request.Builder().url(segment.url)
             if (segment.byteRangeLength != null && segment.byteRangeOffset != null) {
                 val start = segment.byteRangeOffset
-                val end = segment.byteRangeOffset + segment.byteRangeLength - 1
-                connection.setRequestProperty("Range", "bytes=$start-$end")
+                val end = start + segment.byteRangeLength - 1
+                reqBuilder.addHeader("Range", "bytes=$start-$end")
             }
+            val request = reqBuilder.build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val inputStream = response.body?.byteStream() ?: return@use null
 
-            connection.connect()
-
-            val responseCode = connection.responseCode
-            if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_PARTIAL) {
-                val inputStream = connection.inputStream
-                if (responseCode == HttpURLConnection.HTTP_OK && segment.byteRangeLength != null) {
-                    val start = segment.byteRangeOffset ?: 0L
-                    var skipped = 0L
-                    while (skipped < start) {
-                        val s = inputStream.skip(start - skipped)
-                        if (s <= 0) break
-                        skipped += s
-                    }
-                    if (skipped < start) return null
-                    val length = segment.byteRangeLength.toInt()
-                    val buffer = ByteArray(length)
-                    var read = 0
-                    while (read < length) {
-                        val count = inputStream.read(buffer, read, length - read)
-                        if (count < 0) break
-                        read += count
-                    }
-                    if (read == length) buffer else null
-                } else if (responseCode == HttpURLConnection.HTTP_PARTIAL && segment.byteRangeLength != null) {
-                    val expectedStart = segment.byteRangeOffset ?: 0L
-                    val contentRange = connection.getHeaderField("Content-Range")
-                    if (!contentRange.isNullOrEmpty()) {
-                        val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""").find(contentRange)
-                        if (match != null) {
-                            val rangeStart = match.groupValues[1].toLongOrNull()
-                            if (rangeStart != null && rangeStart != expectedStart) {
-                                return null
+                    if (response.code == 200 && segment.byteRangeLength != null) {
+                        val start = segment.byteRangeOffset ?: 0L
+                        var skipped = 0L
+                        while (skipped < start) {
+                            val s = inputStream.skip(start - skipped)
+                            if (s <= 0) break
+                            skipped += s
+                        }
+                        if (skipped < start) return@use null
+                        val length = segment.byteRangeLength.toInt()
+                        val buffer = ByteArray(length)
+                        var read = 0
+                        while (read < length) {
+                            val count = inputStream.read(buffer, read, length - read)
+                            if (count < 0) break
+                            read += count
+                        }
+                        if (read == length) buffer else null
+                    } else if (response.code == 206 && segment.byteRangeLength != null) {
+                        val expectedStart = segment.byteRangeOffset ?: 0L
+                        val contentRange = response.header("Content-Range")
+                        if (!contentRange.isNullOrEmpty()) {
+                            val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""").find(contentRange)
+                            if (match != null) {
+                                val rangeStart = match.groupValues[1].toLongOrNull()
+                                if (rangeStart != null && rangeStart != expectedStart) {
+                                    return@use null
+                                }
                             }
                         }
-                    }
-                    val length = segment.byteRangeLength.toInt()
-                    val buffer = ByteArray(length)
-                    var read = 0
-                    while (read < length) {
-                        val count = inputStream.read(buffer, read, length - read)
-                        if (count < 0) break
-                        read += count
-                    }
-                    if (read == length) buffer else null
-                } else {
-                    val bytes = inputStream.readBytes()
-                    if (segment.byteRangeLength != null && bytes.size.toLong() != segment.byteRangeLength) {
-                        null
+                        val length = segment.byteRangeLength.toInt()
+                        val buffer = ByteArray(length)
+                        var read = 0
+                        while (read < length) {
+                            val count = inputStream.read(buffer, read, length - read)
+                            if (count < 0) break
+                            read += count
+                        }
+                        if (read == length) buffer else null
                     } else {
-                        bytes
+                        val bytes = inputStream.readBytes()
+                        if (segment.byteRangeLength != null && bytes.size.toLong() != segment.byteRangeLength) {
+                            null
+                        } else {
+                            bytes
+                        }
                     }
-                }
-            } else {
-                null
+                } else null
             }
         } catch (e: Exception) {
             e.printStackTrace()
             null
-        } finally {
-            connection?.disconnect()
         }
     }
 
@@ -461,21 +453,16 @@ object HlsDownloader {
     }
 
     fun fetchUrlText(urlString: String): String? {
-        var connection: HttpURLConnection? = null
         return try {
-            val url = URL(urlString)
-            connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.connect()
-            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                connection.inputStream.bufferedReader().use { it.readText() }
-            } else null
+            val request = okhttp3.Request.Builder().url(urlString).build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    response.body?.string()
+                } else null
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             null
-        } finally {
-            connection?.disconnect()
         }
     }
 
