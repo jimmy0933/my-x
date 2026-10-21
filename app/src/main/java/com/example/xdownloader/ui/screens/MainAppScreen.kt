@@ -23,7 +23,8 @@ fun MainAppScreen() {
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            if (currentRoute != "login") {
+                NavigationBar {
                 NavigationBarItem(
                     selected = currentRoute == "home",
                     onClick = {
@@ -84,6 +85,7 @@ fun MainAppScreen() {
                     icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
                     label = { Text("設定") }
                 )
+                }
             }
         }
     ) { padding ->

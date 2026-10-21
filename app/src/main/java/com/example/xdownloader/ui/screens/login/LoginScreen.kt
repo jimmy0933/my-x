@@ -11,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import android.view.ViewGroup
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavController
@@ -155,6 +156,7 @@ fun LoginScreen(navController: NavController) {
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()
+                .imePadding()
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Text(
@@ -166,10 +168,16 @@ fun LoginScreen(navController: NavController) {
                 AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            isFocusable = true
+                            isFocusableInTouchMode = true
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
                             settings.databaseEnabled = true
-                            settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+                            settings.userAgentString = android.webkit.WebSettings.getDefaultUserAgent(ctx)
                             webViewClient = object : WebViewClient() {
                                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                                     return false
@@ -199,9 +207,11 @@ fun LoginScreen(navController: NavController) {
                         }
                     },
                     update = { view ->
-                        // Triggers when webViewKey changes
-                        val dummy = webViewKey
-                        view.loadUrl(url)
+                        // Only reload when explicitly triggered via webViewKey
+                        if (view.tag != webViewKey) {
+                            view.tag = webViewKey
+                            view.loadUrl(url)
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 )
